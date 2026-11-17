@@ -1,0 +1,6 @@
+node_modules/
+# 실제 회사 스케줄 파일은 올리지 않기
+*.xls
+*.xlsx
+!tests/fixtures/*.xls
+.DS_Store
