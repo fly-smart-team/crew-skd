@@ -1,0 +1,12 @@
+{
+  "name": "crew-skd",
+  "private": true,
+  "version": "1.0.0",
+  "description": "MONTHLY SKD 엑셀 → 구글 캘린더",
+  "scripts": {
+    "test": "node --test tests/core.test.js"
+  },
+  "devDependencies": {
+    "xlsx": "0.18.5"
+  }
+}
