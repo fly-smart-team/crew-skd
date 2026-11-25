@@ -276,3 +276,119 @@ test('공항 코드 한 글자 오독 수정', () => {
   const r = L.parseOOOI(t);
   assert.deepEqual([r.origin, r.destination], ['RKSI', 'VVTS']);
 });
+
+/* ===== 조종사 역할·경력·양식 ===== */
+
+const fl = (o, d, out, inn, extra) => L.recalc(L.newEntry(Object.assign({ origin: o, destination: d, out, in: inn, aircraftType: 'A321', registration: 'HL8399' }, extra)),
+  { takeoff: true, landing: true });
+
+test('예전 Duty 코드에서 역할 읽기', () => {
+  assert.equal(L.fnOf({ duty: 'C' }), 'PIC');
+  assert.equal(L.fnOf({ duty: 'F' }), 'SIC');
+  assert.equal(L.fnOf({ duty: 'I' }), 'PIC');
+  assert.equal(L.instructingOf({ duty: 'I' }), true);
+  assert.equal(L.fnOf({ fn: 'PICUS', duty: 'F' }), 'PICUS');
+});
+
+test('역할별 시간과 회사 Duty 코드', () => {
+  const e = fl('RKSI', 'RJCC', utc(2026, 10, 31, 23, 2), utc(2026, 11, 1, 1, 42), { fn: 'PIC', instructing: true });
+  assert.deepEqual(L.functionTime(e), { pic: 160, picus: 0, sic: 0, relief: 0, dual: 0, instructor: 160, examiner: 0 });
+  assert.equal(e.duty, 'C');
+  const f = fl('RKSI', 'RJCC', utc(2026, 10, 31, 23, 2), utc(2026, 11, 1, 1, 42), { fn: 'SIC' });
+  assert.equal(f.duty, 'F');
+  assert.equal(f.ifr, 160); // IFR 기본 = 블록
+});
+
+test('경력 단계', () => {
+  const periods = [{ from: '2012-03-01', fn: 'SIC', title: '부기장' }, { from: '2019-07-01', fn: 'PIC', title: '기장' }, { from: '2023-01-15', fn: 'PIC', title: '교관', instructor: true }];
+  assert.equal(L.careerAt(periods, '2015-05-05').title, '부기장');
+  assert.equal(L.careerAt(periods, '2019-07-01').title, '기장');
+  assert.equal(L.careerAt(periods, '2026-11-25').instructor, true);
+  assert.equal(L.careerAt(periods, '2010-01-01'), null);
+});
+
+test('FAA 야간 (일몰 1시간 후)', () => {
+  const icn = L.airportDB().get('RKSI');
+  const s = L.sunTimes(utc(2026, 11, 10, 9, 0), icn.lat, icn.lon); // 18:00 KST
+  assert.equal(s.up, false);
+  const setKst = new Date(s.set + 9 * 3600e3).toISOString().slice(11, 16);
+  assert.ok(setKst >= '17:15' && setKst <= '17:35', setKst);
+  assert.equal(L.isFaaNight(s.set + 30 * 60000, icn), false);
+  assert.equal(L.isFaaNight(s.set + 70 * 60000, icn), true);
+  assert.equal(L.isFaaNight(utc(2026, 11, 10, 3, 0), icn), false); // 정오
+});
+
+test('누계: 이월 + 역할별', () => {
+  const carry = { total: 600000, pic: 100000, sic: 400000, instructor: 5000, landingsDay: 900, asOf: '2026-11-21' };
+  const a = fl('RKSI', 'VVTS', utc(2026, 11, 24, 23, 19), utc(2026, 11, 25, 5, 4), { fn: 'PIC', instructing: true, approaches: 1, holding: true });
+  const b = fl('RKSI', 'RJCC', utc(2026, 11, 20, 0, 0), utc(2026, 11, 20, 2, 0), { fn: 'PIC' }); // 이월 기준일 이전
+  const t = L.totalsFull([a, b], carry);
+  assert.equal(t.total, 600000 + 345);
+  assert.equal(t.pic, 100000 + 345);
+  assert.equal(t.sic, 400000);
+  assert.equal(t.instructor, 5000 + 345);
+  assert.equal(t.multiPilot, 345);
+  assert.equal(t.xc, 345);
+  assert.equal(t.landingsDay, 901);
+  assert.equal(t.approaches, 1);
+});
+
+test('FAA 최근 비행 요건', () => {
+  const asOf = utc(2026, 11, 25, 12, 0);
+  const list = [];
+  for (let i = 0; i < 6; i++) list.push(fl('RKSI', 'RJCC', utc(2026, 9, 1 + i, 0, 0), utc(2026, 9, 1 + i, 2, 0), { approaches: 1, holding: i === 0 }));
+  // 야간 착륙 3회 (KST 밤 11시 착륙)
+  for (let i = 0; i < 3; i++) list.push(fl('RJCC', 'RKSI', utc(2026, 11, 10 + i, 11, 30), utc(2026, 11, 10 + i, 14, 0)));
+  const c = L.faaCurrency(list, asOf);
+  assert.equal(c.night.landings, 3);
+  assert.equal(c.night.isCurrent, true);
+  assert.equal(c.instrument.approaches, 6);
+  assert.equal(c.instrument.isCurrent, true);
+  assert.equal(new Date(c.instrument.validUntil).toISOString().slice(0, 10), '2027-03-31');
+});
+
+test('ICAO 양식: 칸 값, 페이지 합계, 이월', () => {
+  const carry = { total: 100 * 60, pic: 40 * 60, sic: 60 * 60, multiPilot: 100 * 60, landingsDay: 10, asOf: '2026-10-31' };
+  const list = [
+    fl('RKSI', 'RJCC', utc(2026, 11, 1, 0, 0), utc(2026, 11, 1, 2, 0), { fn: 'PIC' }),
+    fl('RJCC', 'RKSI', utc(2026, 11, 1, 3, 0), utc(2026, 11, 1, 5, 30), { fn: 'SIC', picName: 'KIM' }),
+    fl('RKSI', 'VVTS', utc(2026, 11, 24, 23, 19), utc(2026, 11, 25, 5, 4), { fn: 'PIC' }),
+    L.newEntry({ logDate: '2026-11-10', isSimulator: true, aircraftType: 'A320', fstdType: 'FFS', block: 240, takeoffs: 2, landings: 2 })
+  ];
+  const log = L.buildLog(list, { format: 'icao', carry, rowsPerPage: 2 });
+  assert.equal(log.rowCount, 4);
+  assert.equal(log.pages.length, 2);
+  const col = k => log.cols.findIndex(c => c.key === k);
+  const r0 = log.pages[0].rows[0].cells;
+  assert.equal(r0[col('date')], '01/11/26');
+  assert.equal(r0[col('depPlace')], 'RKSI');
+  assert.equal(r0[col('depTime')], '00:00');
+  assert.equal(r0[col('acType')], 'Airbus A321');
+  assert.equal(r0[col('picName')], 'SELF');
+  assert.equal(log.pages[0].rows[1].cells[col('picName')], 'KIM');
+  assert.equal(log.pages[0].broughtForward.total, 6000);
+  assert.equal(log.pages[0].pageTotal.total, 270);
+  assert.equal(log.pages[1].broughtForward.total, 6270);
+  assert.equal(log.pages[1].total.total, 6270 + 345);
+  assert.equal(log.pages[1].total.fnPic, 2400 + 120 + 345);
+  assert.equal(log.pages[1].total.fnCop, 3600 + 150);
+  assert.equal(log.pages[1].total.fstdTime, 240);
+  assert.equal(log.pages[1].rows[0].cells[col('fstdType')], 'A320 FFS');
+  // 기간 지정: 시작 전 기록은 이월에 들어감
+  const nov24 = L.buildLog(list, { format: 'icao', carry, from: '2026-11-20' });
+  assert.equal(nov24.rowCount, 1);
+  assert.equal(nov24.pages[0].broughtForward.total, 6000 + 270);
+});
+
+test('FAA 양식: 10진수 시간과 SIC 합산', () => {
+  const list = [fl('RKSI', 'RJCC', utc(2026, 11, 1, 0, 0), utc(2026, 11, 1, 2, 20), { fn: 'PICUS', approaches: 1, approachType: 'ILS 01R' })];
+  const log = L.buildLog(list, { format: 'faa' });
+  const cols = log.cols, cells = log.pages[0].rows[0].cells;
+  const v = k => L.cellText(cols.find(c => c.key === k), cells[cols.findIndex(c => c.key === k)], log.format);
+  assert.equal(v('sic'), '2.3');
+  assert.equal(v('pic'), '');
+  assert.equal(v('cat'), 'AMEL');
+  assert.ok(v('remarks').includes('PICUS') && v('remarks').includes('ILS 01R'));
+  const csv = L.formatCSV(list, { format: 'faa' });
+  assert.ok(csv.split('\r\n')[0].includes('Total duration of flight'));
+});

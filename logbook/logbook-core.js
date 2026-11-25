@@ -742,6 +742,8 @@
       irregular: '', duty: 'C', out: null, off: null, on: null, in: null,
       block: 0, flight: 0, night: 0, instrument: 0, takeoffs: 0, landings: 0, nightTakeoffs: 0, nightLandings: 0,
       nightManual: false, instrumentManual: false, isSimulator: false, remarks: '', source: 'manual',
+      fn: 'PIC', instructing: false, examining: false, picName: '', ifr: 0, ifrManual: false, simInst: 0,
+      approaches: 0, approachType: '', holding: false, fstdType: '',
       createdAt: now, updatedAt: now, deleted: false
     }, fields || {});
   }
@@ -767,6 +769,12 @@
       if (rule === 'flight') e.instrument = e.flight;
       else if (rule === 'block') e.instrument = e.block;
     }
+    if (!e.ifrManual) {
+      const rule = opts.ifrRule || 'block';
+      if (rule === 'block') e.ifr = e.block;
+      else if (rule === 'flight') e.ifr = e.flight;
+    }
+    if (e.fn && FUNCTIONS[e.fn]) e.duty = e.instructing && e.fn === 'PIC' ? (opts.instructorDuty || 'C') : FUNCTIONS[e.fn].duty;
     if (opts.takeoff !== undefined) { e.takeoffs = opts.takeoff ? 1 : 0; e.nightTakeoffs = opts.takeoff && n && n.takeoffNight ? 1 : 0; }
     if (opts.landing !== undefined) { e.landings = opts.landing ? 1 : 0; e.nightLandings = opts.landing && n && n.landingNight ? 1 : 0; }
     return e;
@@ -815,6 +823,361 @@
     s.isCurrent = s.totalTakeoffs >= required && s.totalLandings >= required;
     if (to.length >= required && ld.length >= required) s.validUntil = Math.min(to[required - 1], ld[required - 1]) + win;
     return s;
+  }
+
+  /* ===================== 조종사 역할·경력 단계·기종 ===================== */
+
+  /** 비행에서의 역할 (ICAO/EASA·FAA 공통으로 나눌 수 있게) */
+  const FUNCTIONS = {
+    PIC: { label: '기장 (PIC)', duty: 'C' },
+    SIC: { label: '부기장 (Co-pilot / SIC)', duty: 'F' },
+    PICUS: { label: '감독받는 기장 (PICUS)', duty: 'F' },
+    RELIEF: { label: '순항 교대 조종사 (Cruise relief)', duty: 'F' },
+    DUAL: { label: '교육 받음 (Dual)', duty: 'T' },
+    OBS: { label: '옵저버 (시간 미산입)', duty: 'O' }
+  };
+
+  /** 예전 기록(회사 Duty 코드만 있는 것)도 역할로 읽기 */
+  function fnOf(e) {
+    if (e.fn && FUNCTIONS[e.fn]) return e.fn;
+    return { C: 'PIC', F: 'SIC', I: 'PIC', O: 'OBS', T: 'DUAL' }[e.duty] || 'PIC';
+  }
+  const instructingOf = e => (e.instructing != null ? !!e.instructing : e.duty === 'I');
+
+  /** 역할별 시간(분). 기준은 총 비행시간(블록) */
+  function functionTime(e) {
+    const t = { pic: 0, picus: 0, sic: 0, relief: 0, dual: 0, instructor: 0, examiner: 0 };
+    if (e.isSimulator) return t;
+    const b = e.block || 0, f = fnOf(e);
+    if (f === 'PIC') t.pic = b; else if (f === 'PICUS') t.picus = b; else if (f === 'SIC') t.sic = b;
+    else if (f === 'RELIEF') t.relief = b; else if (f === 'DUAL') t.dual = b;
+    if (instructingOf(e)) t.instructor = b;
+    if (e.examining) t.examiner = b;
+    return t;
+  }
+
+  /**
+   * 경력 단계: [{from:'2014-03-01', title:'부기장', fn:'SIC', aircraftType:'A320', employer:'', instructor:false, examiner:false}]
+   * 비행 날짜에 해당하는(가장 최근에 시작한) 단계
+   */
+  function careerAt(periods, date) {
+    let best = null;
+    for (const p of periods || []) if (p.from && p.from <= date && (!best || p.from > best.from)) best = p;
+    return best;
+  }
+
+  /** 기종 정보: 다인 조종(mp), 다발(me), 등급(cls), 터빈 */
+  const AIRCRAFT_TYPES = [
+    ['A319', 'Airbus A319'], ['A320', 'Airbus A320'], ['A321', 'Airbus A321'], ['A20N', 'Airbus A320neo'], ['A21N', 'Airbus A321neo'],
+    ['A330', 'Airbus A330'], ['A332', 'Airbus A330-200'], ['A333', 'Airbus A330-300'], ['A339', 'Airbus A330-900'],
+    ['A350', 'Airbus A350'], ['A359', 'Airbus A350-900'], ['A35K', 'Airbus A350-1000'], ['A380', 'Airbus A380'], ['A388', 'Airbus A380-800'],
+    ['B737', 'Boeing 737'], ['B738', 'Boeing 737-800'], ['B38M', 'Boeing 737 MAX 8'], ['B744', 'Boeing 747-400'], ['B748', 'Boeing 747-8'],
+    ['B763', 'Boeing 767-300'], ['B772', 'Boeing 777-200'], ['B77W', 'Boeing 777-300ER'], ['B77L', 'Boeing 777F'], ['B787', 'Boeing 787'],
+    ['B788', 'Boeing 787-8'], ['B789', 'Boeing 787-9'], ['B78X', 'Boeing 787-10'], ['AT76', 'ATR 72-600'], ['DH8D', 'Dash 8 Q400'], ['CRJ9', 'CRJ900'], ['E190', 'Embraer 190']
+  ].map(([code, name]) => ({ code, name, mp: true, me: true, cls: 'AMEL', turbine: true }));
+
+  function aircraftInfo(code, custom) {
+    const c = String(code || '').toUpperCase().replace(/\s+/g, '');
+    const list = (custom || []).concat(AIRCRAFT_TYPES);
+    return list.find(t => t.code === c) || list.find(t => c && c.startsWith(t.code)) ||
+      { code: c, name: c, mp: true, me: true, cls: 'AMEL', turbine: true, guessed: true };
+  }
+
+  /* ---------- 거리·FAA 야간 ---------- */
+
+  function distanceNm(a, b) {
+    const [la1, lo1, la2, lo2] = [a.lat * RAD, a.lon * RAD, b.lat * RAD, b.lon * RAD];
+    const c = Math.sin(la1) * Math.sin(la2) + Math.cos(la1) * Math.cos(la2) * Math.cos(lo2 - lo1);
+    return Math.acos(Math.min(1, Math.max(-1, c))) * 3440.065;
+  }
+
+  /** 해 진 시각(직전)과 뜨는 시각(다음) — 태양 고도 −0.833° 기준, 1분 단위 */
+  function sunTimes(ms, lat, lon) {
+    const up = t => sunElevation(t, lat, lon) > -0.833;
+    if (up(ms)) return { up: true };
+    let set = null, rise = null;
+    for (let t = ms; t > ms - DAY; t -= 5 * MIN) if (up(t)) { set = t; break; }
+    if (set != null) { while (up(set + MIN)) set += MIN; set += MIN; }
+    for (let t = ms; t < ms + DAY; t += 5 * MIN) if (up(t)) { rise = t; break; }
+    if (rise != null) { while (up(rise - MIN)) rise -= MIN; }
+    return { up: false, set, rise };
+  }
+
+  /** FAA 야간 이착륙 요건(61.57(b))용 야간: 일몰 1시간 후 ~ 일출 1시간 전 */
+  function isFaaNight(ms, apt) {
+    if (ms == null || !apt) return false;
+    const s = sunTimes(ms, apt.lat, apt.lon);
+    if (s.up) return false;
+    return (s.set == null || ms >= s.set + 60 * MIN) && (s.rise == null || ms <= s.rise - 60 * MIN);
+  }
+
+  /** 출력·누계에 쓰는 한 비행의 파생 값 */
+  function derived(e, ctx) {
+    ctx = ctx || {};
+    const db = ctx.airports || airportDB();
+    const ac = aircraftInfo(e.aircraftType, ctx.aircraft);
+    const ft = functionTime(e);
+    const o = db.get(e.origin), d = db.get(e.destination);
+    const b = e.isSimulator ? 0 : (e.block || 0);
+    const xc = !e.isSimulator && o && d && distanceNm(o, d) > 50 ? b : 0;
+    const faaNightTo = !e.isSimulator && e.takeoffs > 0 && isFaaNight(e.off != null ? e.off : e.out, o) ? e.takeoffs : 0;
+    const faaNightLdg = !e.isSimulator && e.landings > 0 && isFaaNight(e.on != null ? e.on : e.in, d) ? e.landings : 0;
+    return {
+      ac, ft, xc, faaNightTo, faaNightLdg,
+      total: b,
+      multiPilot: ac.mp ? b : 0, singleSE: !ac.mp && !ac.me ? b : 0, singleME: !ac.mp && ac.me ? b : 0,
+      ifr: e.isSimulator ? 0 : (e.ifr != null ? e.ifr : b),
+      fstd: e.isSimulator ? (e.block || 0) : 0,
+      dayLdg: e.isSimulator ? 0 : Math.max(0, (e.landings || 0) - (e.nightLandings || 0)),
+      nightLdg: e.isSimulator ? 0 : (e.nightLandings || 0)
+    };
+  }
+
+  /* ---------- 누계 (이월 포함) ---------- */
+
+  /** 누계 항목. 이월 누계 입력과 요약 화면이 같은 목록을 씀 */
+  const TOTAL_FIELDS = [
+    ['total', '총 비행시간', 'time'], ['pic', '기장 (PIC)', 'time'], ['picus', 'PICUS', 'time'], ['sic', '부기장 (Co-pilot/SIC)', 'time'],
+    ['relief', '순항 교대', 'time'], ['dual', '교육 받음 (Dual)', 'time'], ['instructor', '교관 (IP)', 'time'], ['examiner', '평가관', 'time'],
+    ['multiPilot', '다인 조종 (Multi-pilot)', 'time'], ['night', '야간', 'time'], ['ifr', 'IFR', 'time'], ['instrument', '실계기', 'time'],
+    ['simInst', '모의계기', 'time'], ['xc', '야외 (Cross-country)', 'time'], ['fstd', '시뮬레이터 (FSTD)', 'time'],
+    ['landingsDay', '주간 착륙', 'count'], ['landingsNight', '야간 착륙', 'count'], ['approaches', '계기 접근', 'count']
+  ];
+
+  /**
+   * 누계. carry = 이월 누계 {total, pic, ..., asOf}: asOf 다음 날부터의 기록만 더함
+   * range = {from, through}가 있으면 그 기간만 (이월 무시)
+   */
+  function totalsFull(entries, carry, range, ctx) {
+    const t = { flights: 0, sims: 0, takeoffs: 0, landings: 0 };
+    TOTAL_FIELDS.forEach(([k]) => { t[k] = 0; });
+    const useCarry = carry && !range;
+    if (useCarry) TOTAL_FIELDS.forEach(([k]) => { t[k] = +carry[k] || 0; });
+    for (const e of live(entries)) {
+      if (useCarry && carry.asOf && e.logDate <= carry.asOf) continue;
+      if (range && range.from && e.logDate < range.from) continue;
+      if (range && range.through && e.logDate > range.through) continue;
+      addEntry(t, e, ctx);
+    }
+    return t;
+  }
+
+  function addEntry(t, e, ctx) {
+    const x = derived(e, ctx);
+    if (e.isSimulator) { t.sims++; t.fstd += x.fstd; return; }
+    if (fnOf(e) === 'OBS') return;
+    t.flights++;
+    t.total += x.total; t.multiPilot += x.multiPilot;
+    for (const k of ['pic', 'picus', 'sic', 'relief', 'dual', 'instructor', 'examiner']) t[k] += x.ft[k];
+    t.night += e.night || 0; t.ifr += x.ifr; t.instrument += e.instrument || 0; t.simInst += e.simInst || 0; t.xc += x.xc;
+    t.landingsDay += x.dayLdg; t.landingsNight += x.nightLdg; t.approaches += e.approaches || 0;
+    t.takeoffs += e.takeoffs || 0; t.landings += e.landings || 0;
+  }
+
+  /* ---------- FAA 최근 비행 요건 ---------- */
+
+  /** FAA 61.57: 야간 90일(이륙 3·완전 정지 착륙 3, 일몰 1시간 후~일출 1시간 전), 계기 6개월(접근 6·체공) */
+  function faaCurrency(entries, asOf, ctx) {
+    const win = 90 * DAY, start = asOf - win;
+    const night = { takeoffs: 0, landings: 0, validUntil: null };
+    const to = [], ld = [];
+    const asOfD = new Date(asOf);
+    const monthStart = Date.UTC(asOfD.getUTCFullYear(), asOfD.getUTCMonth() - 6, 1);
+    const inst = { approaches: 0, holding: 0, validUntil: null, from: monthStart };
+    const apps = [], holds = [];
+    for (const e of live(entries)) {
+      const d = eventTime(e);
+      if (d > asOf) continue;
+      const x = derived(e, ctx);
+      const nto = e.isSimulator ? (e.nightTakeoffs || 0) : x.faaNightTo, nld = e.isSimulator ? (e.nightLandings || 0) : x.faaNightLdg;
+      if (d > start) { night.takeoffs += nto; night.landings += nld; }
+      for (let i = 0; i < nto; i++) to.push(d);
+      for (let i = 0; i < nld; i++) ld.push(d);
+      if (d >= monthStart) { inst.approaches += e.approaches || 0; if (e.holding) inst.holding++; }
+      for (let i = 0; i < (e.approaches || 0); i++) apps.push(d);
+      if (e.holding) holds.push(d);
+    }
+    to.sort((a, b) => b - a); ld.sort((a, b) => b - a); apps.sort((a, b) => b - a); holds.sort((a, b) => b - a);
+    night.isCurrent = night.takeoffs >= 3 && night.landings >= 3;
+    if (to.length >= 3 && ld.length >= 3) night.validUntil = Math.min(to[2], ld[2]) + win;
+    inst.isCurrent = inst.approaches >= 6 && inst.holding >= 1;
+    if (apps.length >= 6 && holds.length) {
+      const lim = new Date(Math.min(apps[5], holds[0]));
+      inst.validUntil = Date.UTC(lim.getUTCFullYear(), lim.getUTCMonth() + 7, 0); // 6개월 뒤 그 달 말일
+    }
+    return { night, instrument: inst };
+  }
+
+  /* ---------- 출력 양식 (ICAO/EASA · FAA · 회사) ---------- */
+
+  const ddmmyy = ms => { const d = new Date(ms); return `${pad2(d.getUTCDate())}/${pad2(d.getUTCMonth() + 1)}/${String(d.getUTCFullYear()).slice(2)}`; };
+  const ymd = ms => { const d = new Date(ms); return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`; };
+  const hhmmColon = ms => { const d = new Date(ms); return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`; };
+
+  /**
+   * 양식별 칸 정의. kind: text | time(분) | count. group: 머리글 위 줄. sum: 페이지 합계를 낼 칸의 누계 키
+   * row(e, x, ctx) → 그 칸 값
+   */
+  const FORMATS = {
+    icao: {
+      name: 'ICAO / EASA (AMC1 FCL.050)',
+      note: '시각 UTC · 시간 시:분 · 날짜 일/월/연',
+      cols: [
+        { key: 'date', group: '1', label: 'Date (dd/mm/yy)', kind: 'text', row: (e) => e.isSimulator ? '' : ddmmyy(e.out) }, // 시뮬레이터는 12번 칸에만
+        { key: 'depPlace', group: '2 Departure', label: 'Place', kind: 'text', row: (e) => e.isSimulator ? '' : e.origin },
+        { key: 'depTime', group: '2 Departure', label: 'Time', kind: 'text', row: (e) => e.isSimulator || e.out == null ? '' : hhmmColon(e.out) },
+        { key: 'arrPlace', group: '3 Arrival', label: 'Place', kind: 'text', row: (e) => e.isSimulator ? '' : e.destination },
+        { key: 'arrTime', group: '3 Arrival', label: 'Time', kind: 'text', row: (e) => e.isSimulator || e.in == null ? '' : hhmmColon(e.in) },
+        { key: 'acType', group: '4 Aircraft', label: 'Make, model, variant', kind: 'text', row: (e, x) => e.isSimulator ? '' : x.ac.name },
+        { key: 'acReg', group: '4 Aircraft', label: 'Registration', kind: 'text', row: (e) => e.isSimulator ? '' : e.registration },
+        { key: 'spSE', group: '5 Single-pilot time', label: 'SE', kind: 'time', sum: 'singleSE', row: (e, x) => x.singleSE },
+        { key: 'spME', group: '5 Single-pilot time', label: 'ME', kind: 'time', sum: 'singleME', row: (e, x) => x.singleME },
+        { key: 'mp', group: '6', label: 'Multi-pilot time', kind: 'time', sum: 'multiPilot', row: (e, x) => x.multiPilot },
+        { key: 'total', group: '7', label: 'Total time of flight', kind: 'time', sum: 'total', row: (e, x) => x.total },
+        { key: 'picName', group: '8', label: 'Name PIC', kind: 'text', row: (e) => e.isSimulator ? '' : (fnOf(e) === 'PIC' ? 'SELF' : e.picName || '') },
+        { key: 'ldgDay', group: '9 Landings', label: 'Day', kind: 'count', sum: 'landingsDay', row: (e, x) => x.dayLdg },
+        { key: 'ldgNight', group: '9 Landings', label: 'Night', kind: 'count', sum: 'landingsNight', row: (e, x) => x.nightLdg },
+        { key: 'night', group: '10 Operational condition time', label: 'Night', kind: 'time', sum: 'night', row: (e) => e.isSimulator ? 0 : e.night || 0 },
+        { key: 'ifr', group: '10 Operational condition time', label: 'IFR', kind: 'time', sum: 'ifr', row: (e, x) => x.ifr },
+        { key: 'fnPic', group: '11 Pilot function time', label: 'PIC', kind: 'time', sum: ['pic', 'picus'], row: (e, x) => x.ft.pic + x.ft.picus },
+        { key: 'fnCop', group: '11 Pilot function time', label: 'Co-pilot', kind: 'time', sum: ['sic', 'relief'], row: (e, x) => x.ft.sic + x.ft.relief },
+        { key: 'fnDual', group: '11 Pilot function time', label: 'Dual', kind: 'time', sum: 'dual', row: (e, x) => x.ft.dual },
+        { key: 'fnInstr', group: '11 Pilot function time', label: 'Instructor', kind: 'time', sum: 'instructor', row: (e, x) => x.ft.instructor },
+        { key: 'fstdDate', group: '12 FSTD session', label: 'Date', kind: 'text', row: (e) => e.isSimulator ? ddmmyy(dateNoon(e.logDate)) : '' },
+        { key: 'fstdType', group: '12 FSTD session', label: 'Type', kind: 'text', row: (e) => e.isSimulator ? [e.aircraftType, e.fstdType].filter(Boolean).join(' ') : '' },
+        { key: 'fstdTime', group: '12 FSTD session', label: 'Total time of session', kind: 'time', sum: 'fstd', row: (e, x) => x.fstd },
+        { key: 'remarks', group: '13', label: 'Remarks and endorsements', kind: 'text', row: (e) => remarksFor(e, 'icao') }
+      ]
+    },
+    faa: {
+      name: 'FAA (14 CFR 61.51)',
+      note: '시간은 10진수(시간) · 날짜 연-월-일(UTC)',
+      decimal: true,
+      cols: [
+        { key: 'date', label: 'Date', kind: 'text', row: (e) => e.isSimulator ? e.logDate : ymd(e.out) },
+        { key: 'type', group: 'Aircraft', label: 'Make & Model', kind: 'text', row: (e, x) => e.isSimulator ? (e.aircraftType + ' FSTD') : x.ac.name },
+        { key: 'ident', group: 'Aircraft', label: 'Ident', kind: 'text', row: (e) => e.isSimulator ? (e.fstdType || 'FSTD') : e.registration },
+        { key: 'from', group: 'Route', label: 'From', kind: 'text', row: (e) => e.isSimulator ? '' : e.origin },
+        { key: 'to', group: 'Route', label: 'To', kind: 'text', row: (e) => e.isSimulator ? '' : e.destination },
+        { key: 'remarks', label: 'Remarks, procedures, maneuvers', kind: 'text', row: (e) => remarksFor(e, 'faa') },
+        { key: 'app', label: 'Inst. App.', kind: 'count', sum: 'approaches', row: (e) => e.approaches || 0 },
+        { key: 'ldgDay', group: 'Landings', label: 'Day', kind: 'count', sum: 'landingsDay', row: (e, x) => x.dayLdg },
+        { key: 'ldgNight', group: 'Landings', label: 'Night', kind: 'count', sum: 'landingsNight', row: (e, x) => x.nightLdg },
+        { key: 'cat', label: 'Category & Class', kind: 'text', row: (e, x) => e.isSimulator ? '' : x.ac.cls },
+        { key: 'me', label: 'Multi-engine', kind: 'time', sum: 'multiEngine', row: (e, x) => e.isSimulator || !x.ac.me ? 0 : x.total },
+        { key: 'turbine', label: 'Turbine', kind: 'time', sum: 'turbine', row: (e, x) => e.isSimulator || !x.ac.turbine ? 0 : x.total },
+        { key: 'xc', label: 'Cross-country', kind: 'time', sum: 'xc', row: (e, x) => x.xc },
+        { key: 'night', label: 'Night', kind: 'time', sum: 'night', row: (e) => e.isSimulator ? 0 : e.night || 0 },
+        { key: 'actual', group: 'Instrument', label: 'Actual', kind: 'time', sum: 'instrument', row: (e) => e.isSimulator ? 0 : e.instrument || 0 },
+        { key: 'simInst', group: 'Instrument', label: 'Simulated', kind: 'time', sum: 'simInst', row: (e) => e.isSimulator ? 0 : e.simInst || 0 },
+        { key: 'fstd', label: 'FFS / FTD', kind: 'time', sum: 'fstd', row: (e, x) => x.fstd },
+        { key: 'dual', label: 'Dual received', kind: 'time', sum: 'dual', row: (e, x) => x.ft.dual },
+        { key: 'pic', label: 'PIC', kind: 'time', sum: 'pic', row: (e, x) => x.ft.pic },
+        { key: 'sic', label: 'SIC', kind: 'time', sum: ['sic', 'picus', 'relief'], row: (e, x) => x.ft.sic + x.ft.picus + x.ft.relief },
+        { key: 'cfi', label: 'As flight instructor', kind: 'time', sum: 'instructor', row: (e, x) => x.ft.instructor },
+        { key: 'total', label: 'Total duration of flight', kind: 'time', sum: 'total', row: (e, x) => x.total }
+      ]
+    },
+    company: {
+      name: '회사 Flight Log',
+      note: '날짜는 설정한 기준 시간대, R/O·R/I는 UTC',
+      cols: [
+        { key: 'date', label: 'Date', kind: 'text', row: (e) => (e.logDate || '').replace(/-/g, '/') },
+        { key: 'ac', label: 'A/C', kind: 'text', row: (e) => e.aircraftType },
+        { key: 'hl', label: 'HL', kind: 'text', row: (e) => e.registration },
+        { key: 'flt', label: 'FLT NO', kind: 'text', row: (e) => e.flightNumber },
+        { key: 'route', label: 'Route', kind: 'text', row: (e, x, ctx) => e.isSimulator ? 'SIM' : `${ctx.airports.display(e.origin)}-${ctx.airports.display(e.destination)}` },
+        { key: 'irr', label: 'IRR', kind: 'text', row: (e) => e.irregular || '' },
+        { key: 'duty', label: 'Duty', kind: 'text', row: (e) => e.duty || '' },
+        { key: 'ro', label: 'R/O', kind: 'text', row: (e) => e.out != null ? companyStamp(e.out) : '' },
+        { key: 'ri', label: 'R/I', kind: 'text', row: (e) => e.in != null ? companyStamp(e.in) : '' },
+        { key: 'block', label: 'Duty time', kind: 'time', sum: 'total', row: (e, x) => x.total },
+        { key: 'ts', label: 'T/S', kind: 'time', sum: 'airborne', row: (e) => e.isSimulator ? 0 : e.flight || 0 },
+        { key: 'nt', label: 'N/T', kind: 'time', sum: 'night', row: (e) => e.isSimulator ? 0 : e.night || 0 },
+        { key: 'it', label: 'I/T', kind: 'time', sum: 'instrument', row: (e) => e.isSimulator ? 0 : e.instrument || 0 },
+        { key: 'to', label: 'T/O', kind: 'mark', row: (e) => e.takeoffs > 0 ? '*' : '' },
+        { key: 'ld', label: 'L/D', kind: 'mark', row: (e) => e.landings > 0 ? '*' : '' }
+      ]
+    }
+  };
+
+  function remarksFor(e, fmt) {
+    const parts = [];
+    if (e.isSimulator) parts.push(e.flightNumber || 'FSTD');
+    else if (e.flightNumber) parts.push(e.flightNumber);
+    const f = fnOf(e);
+    if (f === 'PICUS') parts.push('PICUS');
+    if (f === 'RELIEF') parts.push('Cruise relief');
+    if (instructingOf(e)) parts.push(fmt === 'faa' ? 'Instructing' : 'Instructor');
+    if (e.examining) parts.push('Examiner');
+    if (e.approaches && e.approachType) parts.push(e.approachType);
+    if (e.holding) parts.push('Hold');
+    if (f !== 'PIC' && fmt === 'faa' && e.picName) parts.push('PIC ' + e.picName);
+    if (e.remarks) parts.push(e.remarks);
+    return parts.join(' · ');
+  }
+
+  /**
+   * 양식 표 만들기.
+   * opts: { format, airports, aircraft, carry, from, through, rowsPerPage }
+   * 반환: { format, pages: [{rows, pageTotal, broughtForward, total}], cols }
+   * broughtForward 첫 페이지 = 이월 누계 + 출력 시작일 이전 기록
+   */
+  function buildLog(entries, opts) {
+    const fmt = FORMATS[opts.format || 'icao'];
+    const ctx = { airports: opts.airports || airportDB(), aircraft: opts.aircraft };
+    const all = live(entries).filter(e => fnOf(e) !== 'OBS').sort((a, b) => eventTime(a) - eventTime(b));
+    const inRange = e => (!opts.from || e.logDate >= opts.from) && (!opts.through || e.logDate <= opts.through);
+    const sums = fmt.cols.filter(c => c.sum);
+    const zero = () => Object.fromEntries(sums.map(c => [c.key, 0]));
+    const addRow = (acc, e, x) => { for (const c of sums) acc[c.key] += +c.row(e, x, ctx) || 0; };
+
+    // 이월: 이월 누계(기준일까지) + 기준일 이후 ~ 출력 시작 전 기록
+    const carry = opts.carry || {};
+    const bf = zero();
+    // 다발·터빈 누계는 따로 넣지 않았으면 총 시간과 같다고 봄 (대형 항공사 조종사)
+    const carryVal = k => (k === 'multiEngine' || k === 'turbine') && carry[k] == null ? +carry.total || 0 : +carry[k] || 0;
+    for (const c of sums) bf[c.key] = (Array.isArray(c.sum) ? c.sum : [c.sum]).reduce((a, k) => a + carryVal(k), 0);
+    const rows = [];
+    for (const e of all) {
+      if (carry.asOf && e.logDate <= carry.asOf) continue;
+      const x = derived(e, ctx);
+      if (opts.from && e.logDate < opts.from) { addRow(bf, e, x); continue; }
+      if (!inRange(e)) continue;
+      rows.push({ e, cells: fmt.cols.map(c => c.row(e, x, ctx)), x });
+    }
+    const per = Math.max(1, opts.rowsPerPage || 15);
+    const pages = [];
+    let running = Object.assign({}, bf);
+    for (let i = 0; i < Math.max(rows.length, 1); i += per) {
+      const chunk = rows.slice(i, i + per);
+      const pageTotal = zero();
+      chunk.forEach(r => addRow(pageTotal, r.e, r.x));
+      const broughtForward = running;
+      const total = Object.fromEntries(Object.keys(pageTotal).map(k => [k, broughtForward[k] + pageTotal[k]]));
+      pages.push({ rows: chunk, pageTotal, broughtForward, total });
+      running = total;
+    }
+    return { format: fmt, pages, cols: fmt.cols, rowCount: rows.length };
+  }
+
+  /** 칸 값을 글자로: 시간은 시:분(또는 FAA 10진수), 0은 빈칸 */
+  function cellText(col, v, fmt, blankZero) {
+    if (col.kind === 'time') {
+      if (!v && blankZero !== false) return '';
+      return fmt && fmt.decimal ? (Math.round(v / 6) / 10).toFixed(1) : hmm(v);
+    }
+    if (col.kind === 'count') return v ? String(v) : (blankZero === false ? '0' : '');
+    return v == null ? '' : String(v);
+  }
+
+  function formatCSV(entries, opts) {
+    const log = buildLog(entries, Object.assign({}, opts, { rowsPerPage: 1e9 }));
+    const esc = s => { s = String(s == null ? '' : s); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const head = log.cols.map(c => (c.group && !/^\d+$/.test(c.group) ? c.group + ' - ' : '') + c.label);
+    const lines = [head.map(esc).join(',')];
+    for (const p of log.pages) for (const r of p.rows) lines.push(log.cols.map((c, i) => esc(cellText(c, r.cells[i], log.format))).join(','));
+    return '﻿' + lines.join('\r\n') + '\r\n';
   }
 
   /* ===================== 백업·동기화·CSV ===================== */
@@ -867,6 +1230,8 @@
     MIN, DAY, clock, hmm, parseHMM, dateIn, dateNoon, companyStamp, zulu,
     AIRPORTS, airportDB, parse, toWords, candidates, parseOOOI, estimateSkew, checksumsPass,
     referenceTime, resolveTimes, sunElevation, nightTime, newEntry, recalc, eventTime, live,
-    totals, recency, makeBackup, readBackup, mergeEntries, toCSV, FIELD_LABEL
+    totals, recency, makeBackup, readBackup, mergeEntries, toCSV, FIELD_LABEL,
+    FUNCTIONS, fnOf, instructingOf, functionTime, careerAt, AIRCRAFT_TYPES, aircraftInfo, distanceNm, sunTimes, isFaaNight,
+    derived, TOTAL_FIELDS, totalsFull, faaCurrency, FORMATS, buildLog, cellText, formatCSV
   };
 });
