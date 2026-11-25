@@ -6,7 +6,7 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.25-6'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.25-7'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
@@ -235,7 +235,7 @@
       <div class="sec"><div class="form">
         ${field('sType', '기본 기종 (경력 단계에 없을 때)', st.defaultType, 'autocapitalize="characters"')}
         <div class="field"><label for="sTz">회사 양식 날짜 기준</label>${selectHtml('sTz', [['Asia/Seoul', '한국 시간'], ['UTC', 'UTC']], st.tz)}</div>
-        <div class="field"><label for="sSched">스케줄(SKD) STD·STA 시각 기준</label>${selectHtml('sSched', [['Asia/Seoul', '한국 시간'], ['UTC', 'UTC']], st.schedTz || 'Asia/Seoul')}</div>
+        <div class="field"><label for="sSched">MONTHLY SKD의 STD·STA 시각 기준 (Crew Roster는 자동으로 현지 시각)</label>${selectHtml('sSched', [['Asia/Seoul', '한국 시간'], ['UTC', 'UTC']], st.schedTz || 'Asia/Seoul')}</div>
         <div class="field"><label for="sNight">야간 시간 기준</label>${selectHtml('sNight', [['civil', '시민박명 (ICAO·FAA 기록 기준)'], ['sunset', '일몰 ~ 일출']], st.night)}</div>
         <div class="field"><label for="sIfr">IFR 시간 (ICAO 10번 칸)</label>${selectHtml('sIfr', [['block', '블록시간과 같게'], ['flight', '비행시간(OFF→ON)과 같게'], ['manual', '직접 입력']], st.ifrRule)}</div>
         <div class="field"><label for="sInst">실계기 (회사 I/T·FAA Actual)</label>${selectHtml('sInst', [['flight', '비행시간(OFF→ON)과 같게'], ['block', '블록시간과 같게'], ['manual', '직접 입력']], st.instrumentRule)}</div>
@@ -246,7 +246,7 @@
         <p class="help" style="margin-top:0">에어버스·보잉 등 주요 기종 ${L.AIRCRAFT_TYPES.length}개는 다인 조종·다발·터빈(AMEL)으로 들어 있습니다. 다른 기종은 여기서 추가하세요.</p>
         <ul class="list-plain">${(st.aircraft || []).map((t, i) => `<li><span class="mono">${esc(t.code)} · ${esc(t.name)} · ${t.mp ? '다인' : '1인'} · ${t.me ? '다발' : '단발'} · ${esc(t.cls)}${t.turbine ? ' · 터빈' : ''}</span><button class="btn sm danger" data-del-ac="${i}">삭제</button></li>`).join('')}</ul>
         <div class="form">
-          ${field('tCode', '기종 코드', '', 'autocapitalize="characters" placeholder="C172"')}
+          ${field('tCode', '기종 코드 (회사 코드도 가능: 32A, 3QR…)', '', 'autocapitalize="characters" placeholder="C172 / 32A"')}
           ${field('tName', '제작사·모델 (출력용)', '', 'placeholder="Cessna 172S"')}
           <div class="field"><label for="tCls">종류·등급</label>${selectHtml('tCls', [['AMEL', 'AMEL (육상 다발)'], ['ASEL', 'ASEL (육상 단발)'], ['AMES', 'AMES'], ['ASES', 'ASES'], ['RH', '헬리콥터']], 'AMEL')}</div>
           <div class="field"><label>특성</label>
@@ -599,7 +599,7 @@
     if (!D.fromPlan && e.schedOut == null) return '';
     const z = ms => (ms != null ? L.zulu(ms) + 'Z' : '-');
     return `<div class="sec"><h3>스케줄</h3>
-      <p style="margin:0 0 6px">STD <b class="mono">${z(e.schedOut)}</b> · STA <b class="mono">${z(e.schedIn)}</b>${e.schedOut != null && e.schedIn != null ? ` · 예정 ${L.hmm(Math.round((e.schedIn - e.schedOut) / MIN))}` : ''}</p>
+      <p style="margin:0 0 6px">${e.schedFlight && e.schedFlight !== e.flightNumber ? `<span class="mono">${esc(e.schedFlight)}</span> · ` : ''}STD <b class="mono">${z(e.schedOut)}</b> · STA <b class="mono">${z(e.schedIn)}</b>${e.schedOut != null && e.schedIn != null ? ` · 예정 ${L.hmm(Math.round((e.schedIn - e.schedOut) / MIN))}` : ''}${e.acCode ? ` · 기종 코드 <b class="mono">${esc(e.acCode)}</b>` : ''}</p>
       ${e.crew ? `<p class="help" style="margin:0 0 6px">함께 탄 승무원: ${esc(e.crew)}</p>` : ''}
       ${e.roleSure === false ? '<p class="why" style="margin:0 0 6px">스케줄에서 역할(POSN)을 확인하지 못해 직급으로 추정했습니다. 아래 역할을 확인하세요.</p>' : ''}
       ${D.fromPlan ? `<div class="actions" style="margin:8px 0 0"><label class="btn pri" for="scanInto">📷 OOOI 화면 찍어서 시각 넣기</label></div>
@@ -971,17 +971,22 @@
       if (!window.XLSX) await loadScript('vendor/xlsx/xlsx.full.min.js');
       const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
-      const D0 = window.SKD.parseSkd(rows);
+      const r = LS.importRoster(rows, { airports, existing: S.entries, careers: S.settings.careers, tz: S.settings.tz,
+        schedTz: S.settings.schedTz, defaultType: S.settings.defaultType, aircraft: S.settings.aircraft });
+      const D0 = { emp: r.emp, me: r.me, month: r.month || '' };
       busy(false);
       const pf = S.settings.profile || {};
       if (pf.empNo && D0.emp && pf.empNo !== D0.emp && !confirm(`스케줄의 사번(${D0.emp})이 조종사 정보의 사번(${pf.empNo})과 다릅니다. 그래도 가져올까요?`)) return;
-      const r = LS.importSchedule(D0, { airports, existing: S.entries, careers: S.settings.careers, tz: S.settings.tz,
-        schedTz: S.settings.schedTz, defaultType: S.settings.defaultType });
       const unsure = r.add.filter(e => !e.roleSure).length;
-      const ym = `${D0.month.slice(0, 4)}년 ${+D0.month.slice(4)}월`;
-      if (!r.add.length && !r.updated.length) return toast(`${ym} 스케줄: 새로 넣을 비행이 없습니다 (이미 있음 ${r.skipped}건).`, 5000);
-      const msg = `${ym} 스케줄 (${D0.me || D0.emp})\n\n• 새 예정 비행 ${r.add.length}건\n• 시각이 바뀐 예정 비행 ${r.updated.length}건\n• 이미 있음 ${r.skipped}건` +
-        (unsure ? `\n\n역할(POSN)을 못 읽어 직급으로 추정한 비행 ${unsure}건은 "역할 확인"으로 표시됩니다.` : '') + '\n\n넣을까요?';
+      const ym = D0.month ? `${D0.month.slice(0, 4)}년 ${+D0.month.slice(4)}월` : '';
+      const fmtName = r.format === 'cwp' ? 'Crew Roster' : 'MONTHLY SKD';
+      if (!r.add.length && !r.updated.length) return toast(`${ym} ${fmtName}: 새로 넣을 비행이 없습니다 (이미 있음 ${r.skipped}건).`, 5000);
+      const codes = [...new Set(r.add.map(e => e.acCode).filter(c => c && !(S.settings.aircraft || []).some(t => t.code === c)))];
+      const msg = `${ym} 스케줄 · ${fmtName} (${D0.me || D0.emp})\n\n• 새 예정 비행 ${r.add.length}건\n• 시각이 바뀐 예정 비행 ${r.updated.length}건\n• 이미 있음 ${r.skipped}건` +
+        (r.other && r.other.length ? `\n• 비행이 아닌 일정 ${r.other.length}건은 건너뜀 (${r.other.slice(0, 4).join(', ')}${r.other.length > 4 ? ' …' : ''})` : '') +
+        (r.format === 'cwp' ? '\n\nSTD·STA는 각 공항 현지 시각으로 읽었습니다.' : '') +
+        (unsure ? `\n\n역할을 확실히 못 읽어 추정한 비행 ${unsure}건은 "역할 확인"으로 표시됩니다.` : '') +
+        (codes.length ? `\n\n회사 기종 코드 ${codes.join(', ')}는 경력 단계의 기종으로 넣습니다. 코드별로 기종을 정하려면 설정 › 기종에 그 코드를 추가하세요.` : '') + '\n\n넣을까요?';
       if (!confirm(msg)) return;
       const list = r.add.concat(r.updated);
       await DB.putEntries(list);

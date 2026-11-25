@@ -781,7 +781,7 @@
     return e;
   }
 
-  const eventTime = e => (e.out != null ? e.out : dateNoon(e.logDate) || e.createdAt);
+  const eventTime = e => (e.out != null ? e.out : e.schedOut != null ? e.schedOut : dateNoon(e.logDate) || e.createdAt);
   // 누계·요건·출력에 넣는 기록: 지운 것과 아직 비행하지 않은 예정 비행(스케줄에서 가져온 것) 제외
   const live = list => list.filter(e => !e.deleted && !e.planned);
 

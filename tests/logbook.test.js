@@ -452,3 +452,59 @@ test('스캔과 예정 비행 연결', () => {
   // 편명을 못 읽었으면 시각이 가장 가까운 예정 비행
   assert.equal(LS.matchPlanned(planned, '', utc(2026, 12, 2, 9, 45)).flightNumber, 'OZ8149');
 });
+
+/* ===== Crew Roster Report (xlsx) — 가상 승무원 데이터, 실제와 같은 칸 배치 ===== */
+function cwpRows(meCode = 'P1', meId = '9000001') {
+  const blank = () => Array(20).fill('');
+  const r = cells => { const a = blank(); for (const [i, v] of Object.entries(cells)) a[i] = v; return a; };
+  const head = r({ 1: 'Flight/Activity ', 2: 'From', 3: 'STD', 4: 'To', 5: 'STA', 6: 'A/C', 7: 'Acting rank', 8: 'Duty', 10: 'PIC code', 11: 'Crew ID', 12: 'Name', 14: 'Comment', 16: 'Special Duty Code' });
+  const leg = (fl, from, std, to, sta, ac, code, id, name, rank) => r({ 1: fl, 2: from, 3: std, 4: to, 5: sta, 6: ac, 7: rank, 8: 'FLY', 10: code, 11: id, 13: name });
+  const crew = (code, id, name, rank, duty = 'FLY') => r({ 7: rank, 8: duty, 10: code, 11: id, 13: name });
+  const other = meCode === 'P1' ? ['F1', '9000002', 'KIM FO', 'FO'] : ['P1', '9000003', 'PARK CAP', 'CAP'];
+  return [
+    r({ 1: 'HONG GILDONG  | 9000001  | 32S  | CAP ', 9: 'FLY 10:00 TVL 00:00 DO 10' }),
+    head,
+    leg('KE333Z', 'ICN', '2026-12-08 12:50', 'PEK', '2026-12-08 14:10', '32A', meCode, meId, 'HONG GILDONG', meCode === 'P1' ? 'CAP' : 'FO'),
+    crew(...other),
+    leg('KE358Z', 'CAN', '2026-12-16 01:15', 'ICN', '2026-12-16 05:40', '2QB', meCode, meId, 'HONG GILDONG', meCode === 'P1' ? 'CAP' : 'FO'),
+    head, // 페이지가 바뀌어 머리글이 다시 나오고, 앞 비행의 승무원이 이어짐
+    crew(...other),
+    r({ 1: 'SBY', 2: 'ICN', 3: '2026-12-20 08:00', 4: 'ICN', 5: '2026-12-20 16:00', 7: 'CAP', 8: 'SBY', 11: meId, 13: 'HONG GILDONG' })
+  ];
+}
+
+test('Crew Roster: 양식 판별과 현지 시각 → UTC', () => {
+  assert.equal(LS.detectFormat(cwpRows()), 'cwp');
+  assert.equal(LS.detectFormat(skdRows()), 'skd');
+  const r = LS.importRoster(cwpRows(), { careers: [{ from: '2020-01-01', fn: 'PIC', aircraftType: 'A321' }] });
+  assert.equal(r.format, 'cwp');
+  assert.equal(r.emp, '9000001');
+  assert.equal(r.add.length, 2);
+  assert.deepEqual(r.other, ['SBY (SBY)']);
+  const [a, b] = r.add;
+  assert.equal(a.flightNumber, 'KE333');
+  assert.deepEqual([a.origin, a.destination], ['RKSI', 'ZBAA']);
+  assert.equal(a.schedOut, utc(2026, 12, 8, 3, 50));   // 12:50 KST
+  assert.equal(a.schedIn, utc(2026, 12, 8, 6, 10));    // 14:10 베이징
+  assert.equal(b.schedOut, utc(2026, 12, 15, 17, 15)); // 01:15 광저우
+  assert.equal(b.schedIn, utc(2026, 12, 15, 20, 40));  // 05:40 KST
+  assert.equal(b.logDate, '2026-12-16');
+  assert.equal(a.fn, 'PIC');
+  assert.equal(a.acCode, '32A');
+  assert.equal(a.aircraftType, 'A321');
+  assert.ok(b.crew.includes('KIM FO')); // 페이지 넘어간 승무원 줄도 붙음
+});
+
+test('Crew Roster: 부기장(F1)이면 기장(P1) 이름 자동', () => {
+  const r = LS.importRoster(cwpRows('F1'), {});
+  assert.equal(r.add[0].fn, 'SIC');
+  assert.equal(r.add[0].picName, 'PARK CAP');
+  assert.equal(LS.roleFromCode('P2', 'CAP').fn, 'RELIEF');
+});
+
+test('Crew Roster: 기종 코드 매핑과 스캔 연결(편명 끝 문자 무시)', () => {
+  const r = LS.importRoster(cwpRows(), { aircraft: [{ code: '32A', name: 'Airbus A321', mp: true, me: true, cls: 'AMEL', turbine: true }] });
+  assert.equal(r.add[0].aircraftType, '32A');
+  assert.equal(L.aircraftInfo('32A', [{ code: '32A', name: 'Airbus A321' }]).name, 'Airbus A321');
+  assert.equal(LS.matchPlanned(r.add, 'KE333', utc(2026, 12, 8, 3, 55)).flightNumber, 'KE333');
+});
