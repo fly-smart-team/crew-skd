@@ -1,15 +1,15 @@
 /* 조종사 전자 로그북 — 화면 */
 (function () {
   'use strict';
-  const L = window.LOGBOOK, OCR = window.LOGBOOK_OCR, DB = window.LOGBOOK_STORE, DRIVE = window.LOGBOOK_DRIVE;
+  const L = window.LOGBOOK, OCR = window.LOGBOOK_OCR, DB = window.LOGBOOK_STORE, DRIVE = window.LOGBOOK_DRIVE, LS = window.LOGBOOK_SKD;
   const $ = id => document.getElementById(id);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.25-5'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.25-6'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
-    tz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
+    tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
     carry: { asOf: '' }, airports: [], aircraft: [], careers: [], profile: {}, print: {}, updatedAt: 0
   };
   const ROLES = [['pf', 'PF (이륙·착륙)', true, true], ['pm', 'PM', false, false], ['to', '이륙만', true, false], ['ld', '착륙만', false, true]];
@@ -54,8 +54,10 @@
         .some(x => String(x || '').toUpperCase().includes(q)));
     }
     const board = $('board');
+    const stale = S.entries.filter(e => e.planned && !e.deleted && e.schedOut != null && e.schedOut < Date.now() - 36 * 3600e3);
+    const staleHtml = stale.length && !q ? `<div class="banner"><span>기록하지 않은 <b>지난 예정 비행 ${stale.length}건</b>이 있습니다. 비행했으면 눌러서 시각을 넣고, 취소된 비행이면 정리하세요.</span><button class="btn sm" id="clearStale">지난 예정 정리</button></div>` : '';
     if (!list.length) {
-      board.innerHTML = `<p class="empty">${q ? '찾는 기록이 없습니다.' : '아직 기록이 없습니다.<br>비행 후 MCDU에서 <b>AOC › OOOI STATUS</b> 화면을 띄우고 위의 <b>OOOI 화면 찍기</b>를 누르세요.'}</p>`;
+      board.innerHTML = `<p class="empty">${q ? '찾는 기록이 없습니다.' : '아직 기록이 없습니다.<br><b>📅 스케줄 가져오기</b>로 이번 달 비행을 미리 넣어 두거나,<br>비행 후 MCDU의 <b>AOC › OOOI STATUS</b> 화면을 <b>OOOI 화면 찍기</b>로 찍으세요.'}</p>`;
       return;
     }
     const groups = new Map();
@@ -66,7 +68,7 @@
     }
     let html = '';
     for (const [m, items] of groups) {
-      const sum = items.filter(e => !e.isSimulator).reduce((s, e) => s + e.block, 0);
+      const sum = items.filter(e => !e.isSimulator && !e.planned).reduce((s, e) => s + e.block, 0);
       html += `<div class="month"><span>${esc(m.replace('-', '년 '))}월</span><span class="mono">${L.hmm(sum)}</span></div><ul class="board">`;
       for (const e of items) {
         const title = e.isSimulator ? `SIM · ${esc(e.aircraftType)} ${esc(e.flightNumber)}`
@@ -74,20 +76,34 @@
         const fnShort = { PIC: 'PIC', SIC: 'F/O', PICUS: 'PICUS', RELIEF: 'Relief', DUAL: 'Dual', OBS: 'OBS' }[L.fnOf(e)];
         const sub = [e.aircraftType && !e.isSimulator ? e.aircraftType : '', e.registration, e.isSimulator ? e.fstdType : fnShort,
           L.instructingOf(e) ? 'IP' : '', e.examining ? '평가' : ''].filter(Boolean).map(esc).join(' · ');
-        const badges = [
+        const badges = e.planned ? [
+          '<span class="badge plan">예정</span>',
+          e.roleSure === false ? '<span class="badge warn">역할 확인</span>' : ''
+        ].join('') : [
           e.takeoffs > 0 ? `<span class="badge">T/O${e.nightTakeoffs ? ' ☾' : ''}${e.takeoffs > 1 ? ' ×' + e.takeoffs : ''}</span>` : '',
           e.landings > 0 ? `<span class="badge">L/D${e.nightLandings ? ' ☾' : ''}${e.landings > 1 ? ' ×' + e.landings : ''}</span>` : '',
           e.hasPhoto ? '<span class="badge" title="스캔 사진 있음">📷</span>' : ''
         ].join('');
-        html += `<li class="row" data-id="${esc(e.id)}" tabindex="0" role="button" aria-label="${esc(e.logDate)} ${esc(e.flightNumber)} 열기">
+        const blk = e.planned
+          ? `<span class="blk"><span class="t">${e.schedOut != null ? L.zulu(e.schedOut) + 'Z' : ''}</span><small>STD</small></span>`
+          : `<span class="blk"><span class="t">${L.hmm(e.block)}</span>${e.night ? `<small>☾ ${L.hmm(e.night)}</small>` : ''}</span>`;
+        html += `<li class="row${e.planned ? ' plan' : ''}" data-id="${esc(e.id)}" tabindex="0" role="button" aria-label="${esc(e.logDate)} ${esc(e.flightNumber)} ${e.planned ? '예정 비행 기록하기' : '열기'}">
           <span class="d">${esc(e.logDate.slice(5).replace('-', '/'))}</span>
           <span><span class="ttl">${title}</span><br><span class="sub">${sub}</span></span>
           <span class="badges">${badges}</span>
-          <span class="blk"><span class="t">${L.hmm(e.block)}</span>${e.night ? `<small>☾ ${L.hmm(e.night)}</small>` : ''}</span></li>`;
+          ${blk}</li>`;
       }
       html += '</ul>';
     }
-    board.innerHTML = html;
+    board.innerHTML = staleHtml + html;
+    const cs = $('clearStale');
+    if (cs) cs.addEventListener('click', async () => {
+      if (!confirm(`지난 예정 비행 ${stale.length}건을 지울까요?\n(실제로 비행한 것은 먼저 눌러서 기록해 두세요)`)) return;
+      const now = Date.now(), gone = stale.map(e => Object.assign({}, e, { deleted: true, updatedAt: now }));
+      await DB.putEntries(gone);
+      gone.forEach(g => { const i = S.entries.findIndex(x => x.id === g.id); if (i >= 0) S.entries[i] = g; });
+      render(true); markDirty();
+    });
   }
 
   $('board').addEventListener('click', ev => {
@@ -219,6 +235,7 @@
       <div class="sec"><div class="form">
         ${field('sType', '기본 기종 (경력 단계에 없을 때)', st.defaultType, 'autocapitalize="characters"')}
         <div class="field"><label for="sTz">회사 양식 날짜 기준</label>${selectHtml('sTz', [['Asia/Seoul', '한국 시간'], ['UTC', 'UTC']], st.tz)}</div>
+        <div class="field"><label for="sSched">스케줄(SKD) STD·STA 시각 기준</label>${selectHtml('sSched', [['Asia/Seoul', '한국 시간'], ['UTC', 'UTC']], st.schedTz || 'Asia/Seoul')}</div>
         <div class="field"><label for="sNight">야간 시간 기준</label>${selectHtml('sNight', [['civil', '시민박명 (ICAO·FAA 기록 기준)'], ['sunset', '일몰 ~ 일출']], st.night)}</div>
         <div class="field"><label for="sIfr">IFR 시간 (ICAO 10번 칸)</label>${selectHtml('sIfr', [['block', '블록시간과 같게'], ['flight', '비행시간(OFF→ON)과 같게'], ['manual', '직접 입력']], st.ifrRule)}</div>
         <div class="field"><label for="sInst">실계기 (회사 I/T·FAA Actual)</label>${selectHtml('sInst', [['flight', '비행시간(OFF→ON)과 같게'], ['block', '블록시간과 같게'], ['manual', '직접 입력']], st.instrumentRule)}</div>
@@ -293,6 +310,7 @@
     $('sType').addEventListener('change', ev => saveSettings({ defaultType: ev.target.value.trim().toUpperCase() }));
     $('sTz').addEventListener('change', ev => saveSettings({ tz: ev.target.value }));
     $('sNight').addEventListener('change', ev => saveSettings({ night: ev.target.value }));
+    $('sSched').addEventListener('change', ev => saveSettings({ schedTz: ev.target.value }));
     $('sIfr').addEventListener('change', ev => saveSettings({ ifrRule: ev.target.value }));
     $('sInst').addEventListener('change', ev => saveSettings({ instrumentRule: ev.target.value }));
     // 기종
@@ -462,7 +480,7 @@
   }
 
   function newFlightDraft() {
-    const last = live().filter(e => !e.isSimulator).sort((a, b) => b.createdAt - a.createdAt)[0];
+    const last = live().filter(e => !e.isSimulator && !e.planned).sort((a, b) => b.createdAt - a.createdAt)[0];
     const e = L.newEntry({ aircraftType: (last && last.aircraftType) || '', registration: (last && last.registration) || '',
       logDate: todayIn(S.settings.tz) });
     D = draftFrom(e, { isNew: true, role: null, hhmm: { out: '', off: '', on: '', in: '' }, lastReg: last ? { type: last.aircraftType, reg: last.registration } : null });
@@ -474,12 +492,17 @@
   async function openEntry(id) {
     const e = S.entries.find(x => x.id === id);
     if (!e) return;
-    D = draftFrom(e);
+    D = e.planned ? planDraft(e) : draftFrom(e);
     if (e.hasPhoto) {
       const blob = await DB.getPhoto(e.id).catch(() => null);
       if (blob) D.photoUrl = URL.createObjectURL(blob);
     }
     openEditor();
+  }
+
+  /** 예정 비행 → 기록할 초안 (역할·기장 이름은 스케줄 것을 유지) */
+  function planDraft(e) {
+    return draftFrom(e, { fromPlan: true, fnTouched: true, outDate: e.schedOut != null ? utcDate(e.schedOut) : utcDate(Date.now()), role: null });
   }
 
   /** OUT 날짜와 HHMM 네 개 → UTC 시각들 (OFF·ON·IN은 바로 앞 시각 이후 가장 가까운 시점) */
@@ -543,7 +566,7 @@
 
   function openEditor() {
     const e = D.e;
-    $('edTitle').textContent = e.isSimulator ? '시뮬레이터' : D.isNew ? (D.notes.length || D.photoUrl ? '스캔 결과 확인' : '새 비행') : (e.flightNumber || '비행');
+    $('edTitle').textContent = e.isSimulator ? '시뮬레이터' : D.fromPlan ? '예정 비행 기록하기' : D.isNew ? (D.notes.length || D.photoUrl ? '스캔 결과 확인' : '새 비행') : (e.flightNumber || '비행');
     const body = $('edBody');
     if (e.isSimulator) body.innerHTML = simForm();
     else body.innerHTML = flightForm();
@@ -565,10 +588,23 @@
         ${!D.notes.length && D.e.scanRaw ? `<p class="help">스캔으로 입력한 기록입니다.</p>` : ''}
         ${D.isNew ? '<p class="help">사진과 아래 값을 한 번 비교한 뒤 저장하세요.</p>' : ''}
         <div class="actions" style="margin:8px 0 0">
-          ${!D.isNew && D.photoUrl ? '<button type="button" class="btn sm" id="rescan">사진으로 다시 읽기</button>' : ''}
+          ${D.e.hasPhoto && !D.photo ? '<button type="button" class="btn sm" id="rescan">사진으로 다시 읽기</button>' : ''}
           ${D.diag ? '<button type="button" class="btn sm" id="copyDiag">인식 결과 복사 (문제 신고용)</button>' : ''}
         </div>
       </div></div></div>`;
+  }
+
+  function planSection() {
+    const e = D.e;
+    if (!D.fromPlan && e.schedOut == null) return '';
+    const z = ms => (ms != null ? L.zulu(ms) + 'Z' : '-');
+    return `<div class="sec"><h3>스케줄</h3>
+      <p style="margin:0 0 6px">STD <b class="mono">${z(e.schedOut)}</b> · STA <b class="mono">${z(e.schedIn)}</b>${e.schedOut != null && e.schedIn != null ? ` · 예정 ${L.hmm(Math.round((e.schedIn - e.schedOut) / MIN))}` : ''}</p>
+      ${e.crew ? `<p class="help" style="margin:0 0 6px">함께 탄 승무원: ${esc(e.crew)}</p>` : ''}
+      ${e.roleSure === false ? '<p class="why" style="margin:0 0 6px">스케줄에서 역할(POSN)을 확인하지 못해 직급으로 추정했습니다. 아래 역할을 확인하세요.</p>' : ''}
+      ${D.fromPlan ? `<div class="actions" style="margin:8px 0 0"><label class="btn pri" for="scanInto">📷 OOOI 화면 찍어서 시각 넣기</label></div>
+      <p class="help">또는 아래 OOOI 칸에 4자리로 직접 넣으세요.</p>` : ''}
+    </div>`;
   }
 
   function flightForm() {
@@ -578,7 +614,7 @@
     const apt = (f, label) => `<div class="field${flagged(f === 'origin' ? 'origin' : 'destination') ? ' flag' : ''}"><label>${label} <span class="help" data-apt-name="${f}"></span></label><input data-apt="${f}" value="${esc(e[f] ? airports.display(e[f]) : '')}" placeholder="ICN / RKSI" autocapitalize="characters" autocomplete="off" spellcheck="false"></div>`;
     const tm = (k, label) => `<div class="${flagged(k) ? 'flag' : ''}"><label class="help" style="display:block;text-align:center;margin:0 0 4px">${label}</label>
       <input data-t="${k}" value="${esc(D.hhmm[k])}" inputmode="numeric" maxlength="4" placeholder="HHMM" aria-label="${label} (UTC, 4자리)"><span class="when" data-when="${k}"></span></div>`;
-    return `${scanSection()}
+    return `${planSection()}${scanSection()}
       <div class="sec"><h3>비행</h3><div class="grid">
         ${inp('flightNumber', '편명', 'OZ731', flagged('flightID') ? 'flag' : '')}
         ${apt('origin', '출발')}${apt('destination', '도착')}
@@ -746,6 +782,7 @@
       }
     }
     target.updatedAt = now;
+    target.planned = false;
     if (D.photo) {
       await DB.putPhoto(target.id, D.photo).catch(() => {});
       target.hasPhoto = true;
@@ -755,7 +792,7 @@
     if (i >= 0) S.entries[i] = target; else S.entries.push(target);
     closeEditor();
     render();
-    toast(D && D.isNew ? '저장했습니다.' : '고쳤습니다.');
+    toast(D && (D.isNew || D.fromPlan) ? '저장했습니다.' : '고쳤습니다.');
     markDirty();
   }
 
@@ -812,8 +849,18 @@
     if (!r.isOOOIPage && r.out == null) return null;
     const ref = L.referenceTime(r, captured || Date.now(), !!reliable);
     const t = L.resolveTimes(r, ref);
-    Object.assign(D.e, { flightNumber: r.flightID || D.e.flightNumber || '', origin: r.origin || D.e.origin || '', destination: r.destination || D.e.destination || '',
-      out: t.out, off: t.off, on: t.on, in: t.in, source: 'scan', scanRaw: r.raw });
+    if (D.fromPlan) {
+      // 스케줄에서 온 편명·구간을 믿고, 화면과 다르면 알려 줌
+      const diff = [];
+      if (r.flightID && r.flightID !== D.e.flightNumber) diff.push(`편명 ${r.flightID}`);
+      if (r.origin && r.origin !== D.e.origin) diff.push(`출발 ${r.origin}`);
+      if (r.destination && r.destination !== D.e.destination) diff.push(`도착 ${r.destination}`);
+      Object.assign(D.e, { out: t.out, off: t.off, on: t.on, in: t.in, source: 'schedule+scan', scanRaw: r.raw });
+      if (diff.length) r.notes.push({ field: 'flightID', kind: 'mismatch', message: `화면 값(${diff.join(', ')})이 스케줄과 다릅니다. 스케줄 값을 유지했습니다.` });
+    } else {
+      Object.assign(D.e, { flightNumber: r.flightID || D.e.flightNumber || '', origin: r.origin || D.e.origin || '', destination: r.destination || D.e.destination || '',
+        out: t.out, off: t.off, on: t.on, in: t.in, source: 'scan', scanRaw: r.raw });
+    }
     D.outDate = t.out != null ? utcDate(t.out) : D.outDate;
     D.hhmm = { out: t.out != null ? L.zulu(t.out) : '', off: t.off != null ? L.zulu(t.off) : '', on: t.on != null ? L.zulu(t.on) : '', in: t.in != null ? L.zulu(t.in) : '' };
     D.notes = r.notes;
@@ -839,6 +886,38 @@
         toast('AOC OOOI STATUS 화면을 찾지 못했습니다. 화면이 잘 보이게 다시 찍어 주세요.', 6000);
         return;
       }
+      // 스케줄에서 가져온 예정 비행이 있으면 거기에 시각을 채움 (역할·기장 이름·승무원 유지)
+      const plan = LS.matchPlanned(S.entries, D.e.flightNumber, D.e.out);
+      if (plan) {
+        const scanned = D;
+        D = planDraft(plan);
+        Object.assign(D, { notes: scanned.notes, screen: scanned.screen, diag: scanned.diag, outDate: scanned.outDate, hhmm: scanned.hhmm });
+        Object.assign(D.e, { source: 'schedule+scan', scanRaw: scanned.e.scanRaw });
+        if (scanned.e.flightNumber && scanned.e.flightNumber !== plan.flightNumber) D.notes.push({ field: 'flightID', kind: 'mismatch', message: `화면 편명 ${scanned.e.flightNumber} → 스케줄의 ${plan.flightNumber} 예정 비행에 넣었습니다. 맞는지 확인하세요.` });
+        recalcDraft();
+        toast(`${plan.logDate.slice(5).replace('-', '/')} ${plan.flightNumber} 예정 비행에 연결했습니다.`, 4000);
+      }
+      D.photo = await shrinkPhoto(file);
+      if (D.photo) D.photoUrl = URL.createObjectURL(D.photo);
+      busy(false);
+      openEditor();
+    } catch (err) {
+      busy(false);
+      toast('글자 인식 실패: ' + (err && err.message || err), 7000);
+    }
+  });
+
+  $('scanInto').addEventListener('change', async ev => {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = '';
+    if (!file || !D) return;
+    busy(true, '사진 준비 중…');
+    try {
+      const exif = await OCR.captureTime(file);
+      const fresh = Math.abs(Date.now() - (file.lastModified || 0)) < 10 * 60000;
+      const captured = exif || (fresh ? file.lastModified : null) || (D.e.schedIn != null ? D.e.schedIn + 3600e3 : null);
+      const r = await runScan(file, captured, true);
+      if (!r) { busy(false); return toast('OOOI 화면을 찾지 못했습니다. 다시 찍어 주세요.', 5000); }
       D.photo = await shrinkPhoto(file);
       if (D.photo) D.photoUrl = URL.createObjectURL(D.photo);
       busy(false);
@@ -872,6 +951,50 @@
     try { await navigator.clipboard.writeText(text); toast('인식 결과를 복사했습니다. 대화창에 붙여 넣어 보내 주세요.', 5000); }
     catch (e) { downloadFile(text, 'ocr-result.json', 'application/json'); toast('인식 결과 파일을 내려받았습니다.'); }
   }
+
+  /* ===================== 월간 스케줄 가져오기 ===================== */
+
+  function loadScript(src) {
+    return new Promise((res, rej) => {
+      const el = document.createElement('script');
+      el.src = src; el.onload = res; el.onerror = () => rej(new Error(src + '를 불러오지 못했습니다.'));
+      document.head.appendChild(el);
+    });
+  }
+
+  $('skdFile').addEventListener('change', async ev => {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = '';
+    if (!file) return;
+    busy(true, '스케줄 읽는 중…');
+    try {
+      if (!window.XLSX) await loadScript('vendor/xlsx/xlsx.full.min.js');
+      const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
+      const D0 = window.SKD.parseSkd(rows);
+      busy(false);
+      const pf = S.settings.profile || {};
+      if (pf.empNo && D0.emp && pf.empNo !== D0.emp && !confirm(`스케줄의 사번(${D0.emp})이 조종사 정보의 사번(${pf.empNo})과 다릅니다. 그래도 가져올까요?`)) return;
+      const r = LS.importSchedule(D0, { airports, existing: S.entries, careers: S.settings.careers, tz: S.settings.tz,
+        schedTz: S.settings.schedTz, defaultType: S.settings.defaultType });
+      const unsure = r.add.filter(e => !e.roleSure).length;
+      const ym = `${D0.month.slice(0, 4)}년 ${+D0.month.slice(4)}월`;
+      if (!r.add.length && !r.updated.length) return toast(`${ym} 스케줄: 새로 넣을 비행이 없습니다 (이미 있음 ${r.skipped}건).`, 5000);
+      const msg = `${ym} 스케줄 (${D0.me || D0.emp})\n\n• 새 예정 비행 ${r.add.length}건\n• 시각이 바뀐 예정 비행 ${r.updated.length}건\n• 이미 있음 ${r.skipped}건` +
+        (unsure ? `\n\n역할(POSN)을 못 읽어 직급으로 추정한 비행 ${unsure}건은 "역할 확인"으로 표시됩니다.` : '') + '\n\n넣을까요?';
+      if (!confirm(msg)) return;
+      const list = r.add.concat(r.updated);
+      await DB.putEntries(list);
+      for (const e of list) { const i = S.entries.findIndex(x => x.id === e.id); if (i >= 0) S.entries[i] = e; else S.entries.push(e); }
+      if (!pf.empNo && D0.emp) await saveSettings({ profile: Object.assign({}, pf, { empNo: D0.emp, name: pf.name || D0.me }) });
+      render(true);
+      toast(`예정 비행 ${r.add.length}건을 넣었습니다. 비행 후 눌러서 시각만 넣으면 됩니다.`, 5000);
+      markDirty();
+    } catch (err) {
+      busy(false);
+      toast('스케줄을 읽지 못했습니다: ' + err.message, 7000);
+    }
+  });
 
   /* ===================== 백업·불러오기 ===================== */
 

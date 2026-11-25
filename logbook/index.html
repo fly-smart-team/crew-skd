@@ -22,6 +22,8 @@
 <script src="ocr.js"></script>
 <script src="store.js"></script>
 <script src="drive.js"></script>
+<script src="../skd-core.js"></script>
+<script src="logbook-skd.js"></script>
 <style>
 /* VOICE: crew-room practical, calm — same family as the SKD→캘린더 page
    IDEA: a logbook as a departure board — each flight a row, block time hanging on the right
@@ -66,6 +68,10 @@ textarea{padding:8px 10px;min-height:70px;resize:vertical}
 .blk .t{font-size:21px;font-weight:600;line-height:1.1;display:block}
 .blk small{font:500 12px "IBM Plex Mono",monospace;color:var(--mute)}
 .empty{padding:36px 8px;color:var(--mute);text-align:center}
+.row.plan{opacity:.72;border-left:3px dashed var(--acc)}
+.row.plan .blk .t{font-size:15px;color:var(--mute)}
+.badge.plan{background:transparent;border:1px dashed var(--acc);color:var(--acc)}
+.badge.warn{color:var(--warn)}
 @media(max-width:600px){.row{grid-template-columns:48px minmax(0,1fr) auto}.badges{grid-column:2;grid-row:2}.blk{grid-row:1/3;grid-column:3}}
 
 /* 요약 */
@@ -178,6 +184,9 @@ table.lb tfoot td:first-child{text-align:left;font-family:"IBM Plex Sans KR",sys
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2"/><circle cx="12" cy="12" r="3.5"/></svg>
         OOOI 화면 찍기</label>
       <input type="file" id="scanFile" accept="image/*" hidden>
+      <input type="file" id="scanInto" accept="image/*" hidden>
+      <label class="btn" for="skdFile">📅 스케줄 가져오기</label>
+      <input type="file" id="skdFile" accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
       <button class="btn" id="addManual">+ 직접 입력</button>
       <button class="btn" id="addSim">+ 시뮬레이터</button>
     </div>

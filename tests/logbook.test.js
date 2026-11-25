@@ -392,3 +392,63 @@ test('FAA 양식: 10진수 시간과 SIC 합산', () => {
   const csv = L.formatCSV(list, { format: 'faa' });
   assert.ok(csv.split('\r\n')[0].includes('Total duration of flight'));
 });
+
+/* ===== 월간 스케줄 → 예정 비행 ===== */
+const XLSX = require('xlsx');
+const SKD = require('../skd-core.js');
+const LS = require('../logbook/logbook-skd.js');
+const skdRows = () => XLSX.utils.sheet_to_json(XLSX.readFile(require('path').join(__dirname, 'fixtures', 'sample.xls')).Sheets['sheet 1'], { header: 1, raw: false, defval: '' });
+
+test('스케줄 → 예정 비행 (기장 입장)', () => {
+  const D = SKD.parseSkd(skdRows());
+  const r = LS.importSchedule(D, { careers: [{ from: '2020-01-01', fn: 'PIC', aircraftType: 'A321' }] });
+  assert.equal(r.add.length, 6);
+  const a = r.add[0];
+  assert.equal(a.planned, true);
+  assert.equal(a.flightNumber, 'OZ8236');
+  assert.deepEqual([a.origin, a.destination], ['RKPC', 'RKTU']);
+  assert.equal(a.schedOut, utc(2026, 12, 1, 10, 15)); // 19:15 KST
+  assert.equal(a.schedIn, utc(2026, 12, 1, 11, 25));
+  assert.equal(a.logDate, '2026-12-01');
+  assert.equal(a.fn, 'PIC');
+  assert.equal(a.roleSure, true);
+  assert.equal(a.picName, '');
+  assert.equal(a.aircraftType, 'A321');
+  assert.ok(a.crew.includes('김부기 F/O'));
+  const last = r.add[5]; // 12/31 23:30 → 01/01 00:40 KST
+  assert.equal(last.schedIn, utc(2026, 12, 31, 15, 40));
+  // 예정 비행은 누계·출력에 안 들어감
+  assert.equal(L.totalsFull(r.add).flights, 0);
+  assert.equal(L.buildLog(r.add, { format: 'icao' }).rowCount, 0);
+  // 다시 가져오면 중복 안 됨
+  const again = LS.importSchedule(D, { existing: r.add });
+  assert.equal(again.add.length, 0);
+  assert.equal(again.skipped, 6);
+});
+
+test('스케줄 → 예정 비행 (부기장 입장: 기장 이름 자동)', () => {
+  const D = Object.assign({}, SKD.parseSkd(skdRows()));
+  D.emp = '100002';
+  D.legs = D.legs.filter(l => l.crew.some(c => c.emp === '100002'));
+  const r = LS.importSchedule(D, {});
+  assert.equal(r.add.length, 5);
+  assert.equal(r.add[0].fn, 'SIC');
+  assert.equal(r.add[0].picName, '홍길동');
+  assert.equal(r.add[0].duty, 'F');
+});
+
+test('직급으로 역할 추정', () => {
+  assert.deepEqual(LS.roleFrom('', 'CAP'), { fn: 'PIC', sure: false });
+  assert.deepEqual(LS.roleFrom('F', 'CAP'), { fn: 'SIC', sure: true });
+  assert.deepEqual(LS.roleFrom('X', 'TRAINEE'), { fn: null, sure: false });
+});
+
+test('스캔과 예정 비행 연결', () => {
+  const D = SKD.parseSkd(skdRows());
+  const planned = LS.importSchedule(D, {}).add;
+  const m = LS.matchPlanned(planned, 'OZ8237', utc(2026, 12, 1, 11, 58));
+  assert.equal(m.flightNumber, 'OZ8237');
+  assert.equal(LS.matchPlanned(planned, 'OZ8237', utc(2026, 12, 5, 11, 58)), null);
+  // 편명을 못 읽었으면 시각이 가장 가까운 예정 비행
+  assert.equal(LS.matchPlanned(planned, '', utc(2026, 12, 2, 9, 45)).flightNumber, 'OZ8149');
+});

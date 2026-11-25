@@ -1,9 +1,9 @@
 /* 오프라인용 서비스 워커: 앱 파일과 글자 인식 엔진을 이 기기에 저장해 두고, 인터넷 없이도 열리게 합니다.
  * 앱 파일을 고치면 VERSION을 올리세요 (app.js의 LOGBOOK_VERSION도 같이). */
-const VERSION = '2026.11.25-5';
+const VERSION = '2026.11.25-6';
 const CACHE = 'logbook-' + VERSION;
 const SHELL = [
-  './', 'index.html', 'app.js', 'logbook-core.js', 'ocr.js', 'store.js', 'drive.js', '../config.js',
+  './', 'index.html', 'app.js', 'logbook-core.js', 'logbook-skd.js', 'ocr.js', 'store.js', 'drive.js', '../config.js', '../skd-core.js',
   'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
   'vendor/tesseract/tesseract.min.js', 'vendor/tesseract/worker.min.js',
   'vendor/tesseract/core/tesseract-core-simd-lstm.wasm.js', 'vendor/tesseract/core/tesseract-core-lstm.wasm.js',

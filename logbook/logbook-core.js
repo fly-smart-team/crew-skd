@@ -744,6 +744,7 @@
       nightManual: false, instrumentManual: false, isSimulator: false, remarks: '', source: 'manual',
       fn: 'PIC', instructing: false, examining: false, picName: '', ifr: 0, ifrManual: false, simInst: 0,
       approaches: 0, approachType: '', holding: false, fstdType: '',
+      planned: false, schedOut: null, schedIn: null, crew: '',
       createdAt: now, updatedAt: now, deleted: false
     }, fields || {});
   }
@@ -781,7 +782,8 @@
   }
 
   const eventTime = e => (e.out != null ? e.out : dateNoon(e.logDate) || e.createdAt);
-  const live = list => list.filter(e => !e.deleted);
+  // 누계·요건·출력에 넣는 기록: 지운 것과 아직 비행하지 않은 예정 비행(스케줄에서 가져온 것) 제외
+  const live = list => list.filter(e => !e.deleted && !e.planned);
 
   /* ===================== 누계·90일 ===================== */
 
