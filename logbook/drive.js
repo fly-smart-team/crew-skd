@@ -50,10 +50,17 @@
   }
 
   // 로그인 창은 버튼을 눌렀을 때만 띄움(자동으로 띄우면 팝업 차단됨). 토큰이 없으면 needLogin 오류
-  async function api(url, opts) {
+  async function api(url, opts, step) {
     if (!signedIn()) throw Object.assign(new Error('구글 드라이브에 다시 연결해 주세요.'), { needLogin: true });
     const t = token;
-    const r = await fetch(url, Object.assign({}, opts, { headers: Object.assign({ Authorization: 'Bearer ' + t }, (opts && opts.headers) || {}) }));
+    let r;
+    try {
+      r = await fetch(url, Object.assign({}, opts, { headers: Object.assign({ Authorization: 'Bearer ' + t }, (opts && opts.headers) || {}) }));
+    } catch (e) {
+      // 응답 자체가 없음: 인터넷 끊김, 또는 브라우저가 요청을 막음 (Brave Shields, 광고 차단기 등)
+      const brave = navigator.brave ? ' Brave를 쓰신다면 주소창의 사자 아이콘 → 이 사이트 Shields 끄기 후 다시 시도해 주세요.' : ' 광고·추적 차단 기능이 있다면 이 사이트에서 꺼 주세요.';
+      throw new Error(`${step || '드라이브 요청'} 단계에서 구글 서버에 연결하지 못했습니다.${brave}`);
+    }
     if (r.status === 401) { token = ''; throw Object.assign(new Error('구글 로그인이 만료됐습니다. 다시 연결해 주세요.'), { needLogin: true }); }
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
@@ -67,29 +74,29 @@
   async function findFile(knownId) {
     if (knownId) {
       try {
-        const r = await api(`${API}/files/${encodeURIComponent(knownId)}?fields=id,trashed`);
+        const r = await api(`${API}/files/${encodeURIComponent(knownId)}?fields=id,trashed`, null, '파일 확인');
         const j = await r.json();
         if (!j.trashed) return j.id;
       } catch (e) { /* 지워졌으면 새로 찾음 */ }
     }
     const q = encodeURIComponent(`name='${FILE_NAME}' and trashed=false`);
-    const r = await api(`${API}/files?q=${q}&spaces=drive&fields=files(id,modifiedTime)&orderBy=modifiedTime desc`);
+    const r = await api(`${API}/files?q=${q}&spaces=drive&fields=files(id,modifiedTime)&orderBy=modifiedTime desc`, null, '파일 찾기');
     const j = await r.json();
     return j.files && j.files[0] ? j.files[0].id : null;
   }
 
   async function download(id) {
-    const r = await api(`${API}/files/${encodeURIComponent(id)}?alt=media`);
+    const r = await api(`${API}/files/${encodeURIComponent(id)}?alt=media`, null, '내려받기');
     return r.text();
   }
 
   async function upload(id, text) {
-    const meta = { name: FILE_NAME, mimeType: 'application/json', description: '조종사 전자 로그북 백업 (자동 동기화)' };
-    const boundary = 'lb' + Math.random().toString(36).slice(2);
-    const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(id ? { mimeType: meta.mimeType } : meta)}\r\n` +
-      `--${boundary}\r\nContent-Type: application/json\r\n\r\n${text}\r\n--${boundary}--`;
+    const meta = id ? {} : { name: FILE_NAME, mimeType: 'application/json', description: '조종사 전자 로그북 백업 (자동 동기화)' };
+    const form = new FormData();
+    form.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
+    form.append('file', new Blob([text], { type: 'application/json' }));
     const url = id ? `${UPLOAD}/files/${encodeURIComponent(id)}?uploadType=multipart&fields=id` : `${UPLOAD}/files?uploadType=multipart&fields=id`;
-    const r = await api(url, { method: id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body });
+    const r = await api(url, { method: id ? 'PATCH' : 'POST', body: form }, '올리기');
     return (await r.json()).id;
   }
 

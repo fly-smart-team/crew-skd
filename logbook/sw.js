@@ -1,6 +1,6 @@
 /* 오프라인용 서비스 워커: 앱 파일과 글자 인식 엔진을 이 기기에 저장해 두고, 인터넷 없이도 열리게 합니다.
  * 앱 파일을 고치면 VERSION을 올리세요 (app.js의 LOGBOOK_VERSION도 같이). */
-const VERSION = '2026.11.25-2';
+const VERSION = '2026.11.25-3';
 const CACHE = 'logbook-' + VERSION;
 const SHELL = [
   './', 'index.html', 'app.js', 'logbook-core.js', 'ocr.js', 'store.js', 'drive.js', '../config.js',
@@ -40,13 +40,21 @@ self.addEventListener('fetch', ev => {
 
   // 페이지: 네트워크 먼저(새 버전 반영), 안 되면 저장본
   if (req.mode === 'navigate') {
-    ev.respondWith(fetch(req).then(r => { const copy = r.clone(); caches.open(CACHE).then(c => c.put('index.html', copy)); return r; })
+    ev.respondWith(fetch(req, { cache: 'no-cache' }).then(r => { const copy = r.clone(); caches.open(CACHE).then(c => c.put('index.html', copy)); return r; })
       .catch(() => caches.match('index.html')));
     return;
   }
-  // 나머지 앱 파일: 저장본 먼저
-  ev.respondWith(caches.match(req, { ignoreSearch: true }).then(hit => hit || fetch(req).then(r => {
+  // 글자 인식 엔진(큼, 거의 안 바뀜): 저장본 먼저
+  if (url.pathname.includes('/vendor/')) {
+    ev.respondWith(caches.match(req, { ignoreSearch: true }).then(hit => hit || fetch(req).then(r => {
+      if (r.ok) { const copy = r.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
+      return r;
+    })));
+    return;
+  }
+  // 앱 파일: 인터넷이 되면 새 버전 확인(브라우저 캐시 건너뜀), 안 되면 저장본
+  ev.respondWith(fetch(req, { cache: 'no-cache' }).then(r => {
     if (r.ok) { const copy = r.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
     return r;
-  })));
+  }).catch(() => caches.match(req, { ignoreSearch: true })));
 });

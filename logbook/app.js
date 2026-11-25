@@ -6,7 +6,7 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.25-2'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.25-3'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', defaultType: 'A321', defaultDuty: 'C',
