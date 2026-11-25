@@ -191,7 +191,7 @@
         schedOut: std, schedIn: sta, schedFlight: leg.flight, acCode: leg.ac,
         fn, roleSure: role.sure, picName: pic ? pic.name : '', crew,
         instructing: /INS|IP|TRI|LTC/i.test(mine.special || ''), examining: /EXA|TRE|CHK|EXAM/i.test(mine.special || ''),
-        aircraftType: acMapped ? acMapped.code : (career && career.aircraftType) || opts.defaultType || '',
+        aircraftType: acMapped ? acMapped.code : L.AIRCRAFT_ALIASES[String(leg.ac).toUpperCase()] || (career && career.aircraftType) || opts.defaultType || '',
         duty: L.FUNCTIONS[fn].duty
       }));
     }

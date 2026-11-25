@@ -878,9 +878,13 @@
     ['B788', 'Boeing 787-8'], ['B789', 'Boeing 787-9'], ['B78X', 'Boeing 787-10'], ['AT76', 'ATR 72-600'], ['DH8D', 'Dash 8 Q400'], ['CRJ9', 'CRJ900'], ['E190', 'Embraer 190']
   ].map(([code, name]) => ({ code, name, mp: true, me: true, cls: 'AMEL', turbine: true }));
 
+  /** 항공사 스케줄의 내부 기종 코드 → 기종 (설정 › 기종에서 따로 정하면 그쪽이 우선) */
+  const AIRCRAFT_ALIASES = { '32A': 'A321', '2QA': 'A321', '2QB': 'A321', '3QR': 'A321', '3QP': 'A321', '31P': 'A321' };
+
   function aircraftInfo(code, custom) {
     const c = String(code || '').toUpperCase().replace(/\s+/g, '');
     const list = (custom || []).concat(AIRCRAFT_TYPES);
+    if (!list.some(t => t.code === c) && AIRCRAFT_ALIASES[c]) return aircraftInfo(AIRCRAFT_ALIASES[c], custom);
     return list.find(t => t.code === c) || list.find(t => c && c.startsWith(t.code)) ||
       { code: c, name: c, mp: true, me: true, cls: 'AMEL', turbine: true, guessed: true };
   }
@@ -1233,7 +1237,7 @@
     AIRPORTS, airportDB, parse, toWords, candidates, parseOOOI, estimateSkew, checksumsPass,
     referenceTime, resolveTimes, sunElevation, nightTime, newEntry, recalc, eventTime, live,
     totals, recency, makeBackup, readBackup, mergeEntries, toCSV, FIELD_LABEL,
-    FUNCTIONS, fnOf, instructingOf, functionTime, careerAt, AIRCRAFT_TYPES, aircraftInfo, distanceNm, sunTimes, isFaaNight,
+    FUNCTIONS, fnOf, instructingOf, functionTime, careerAt, AIRCRAFT_TYPES, AIRCRAFT_ALIASES, aircraftInfo, distanceNm, sunTimes, isFaaNight,
     derived, TOTAL_FIELDS, totalsFull, faaCurrency, FORMATS, buildLog, cellText, formatCSV
   };
 });

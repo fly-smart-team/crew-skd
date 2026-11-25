@@ -33,7 +33,7 @@ iPad Safari에서 열어 **홈 화면에 추가**해 쓰는 웹앱(PWA)이라 �
    - **MONTHLY SKD** (.xls, crew-skd 캘린더 앱과 같은 파일): STD·STA를 한국 시간으로 봄 (설정에서 UTC로 변경 가능)
    - **Crew Roster Report** (.xlsx, Flight/Activity · From · STD · To · STA · A/C · Acting rank · Duty · PIC code · Crew ID · Name):
      STD·STA를 **각 공항 현지 시각**으로 읽어 UTC로 바꿈. 역할은 **PIC code**(P1 기장, F1 부기장, P2·F2 등은 교대 조종사로 추정해 확인 표시).
-     Duty가 FLY가 아닌 일정(대기·편승 등)은 건너뜀. 편명 끝 문자(KE333**Z**)는 떼고 저장. 회사 기종 코드(32A 등)는 설정 › 기종에 코드로 추가하면 그 기종으로 들어감.
+     Duty가 FLY가 아닌 일정(대기·편승 등)은 건너뜀. 편명 끝 문자(KE333**Z**)는 떼고 저장. 회사 기종 코드 32A·2QA·2QB·3QR·3QP·31P는 A321로 들어감 (설정 › 기종에 코드를 추가하면 그쪽이 우선).
 2. 내 비행이 **예정 비행**으로 들어갑니다: 편명, 구간, STD/STA, 로그북 날짜, 역할, 기장 이름, 함께 탄 승무원.
    - 역할은 스케줄의 **POSN**(C = 기장, F = 부기장)을 따릅니다. POSN을 못 읽으면 직급(CAP, F/O)으로 추정하고 "역할 확인"으로 표시합니다.
    - 내가 부기장이면 POSN이 C인 사람이 **기장 이름(ICAO 8번 칸)**으로 들어갑니다.

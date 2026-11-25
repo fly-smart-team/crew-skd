@@ -6,7 +6,7 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.25-7'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.25-8'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
@@ -981,7 +981,7 @@
       const ym = D0.month ? `${D0.month.slice(0, 4)}년 ${+D0.month.slice(4)}월` : '';
       const fmtName = r.format === 'cwp' ? 'Crew Roster' : 'MONTHLY SKD';
       if (!r.add.length && !r.updated.length) return toast(`${ym} ${fmtName}: 새로 넣을 비행이 없습니다 (이미 있음 ${r.skipped}건).`, 5000);
-      const codes = [...new Set(r.add.map(e => e.acCode).filter(c => c && !(S.settings.aircraft || []).some(t => t.code === c)))];
+      const codes = [...new Set(r.add.map(e => e.acCode).filter(c => c && !L.AIRCRAFT_ALIASES[c] && !(S.settings.aircraft || []).some(t => t.code === c)))];
       const msg = `${ym} 스케줄 · ${fmtName} (${D0.me || D0.emp})\n\n• 새 예정 비행 ${r.add.length}건\n• 시각이 바뀐 예정 비행 ${r.updated.length}건\n• 이미 있음 ${r.skipped}건` +
         (r.other && r.other.length ? `\n• 비행이 아닌 일정 ${r.other.length}건은 건너뜀 (${r.other.slice(0, 4).join(', ')}${r.other.length > 4 ? ' …' : ''})` : '') +
         (r.format === 'cwp' ? '\n\nSTD·STA는 각 공항 현지 시각으로 읽었습니다.' : '') +

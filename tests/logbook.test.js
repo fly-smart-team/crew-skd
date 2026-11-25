@@ -508,3 +508,12 @@ test('Crew Roster: 기종 코드 매핑과 스캔 연결(편명 끝 문자 무�
   assert.equal(L.aircraftInfo('32A', [{ code: '32A', name: 'Airbus A321' }]).name, 'Airbus A321');
   assert.equal(LS.matchPlanned(r.add, 'KE333', utc(2026, 12, 8, 3, 55)).flightNumber, 'KE333');
 });
+
+test('회사 기종 코드 → A321', () => {
+  const r = LS.importRoster(cwpRows(), { careers: [{ from: '2020-01-01', fn: 'PIC', aircraftType: 'B777' }] });
+  assert.equal(r.add[0].aircraftType, 'A321'); // 32A
+  assert.equal(r.add[1].aircraftType, 'A321'); // 2QB
+  assert.equal(L.aircraftInfo('3QR').name, 'Airbus A321');
+  // 설정에서 코드를 따로 정하면 그게 우선
+  assert.equal(LS.importRoster(cwpRows(), { aircraft: [{ code: '32A', name: 'Airbus A321neo' }] }).add[0].aircraftType, '32A');
+});
