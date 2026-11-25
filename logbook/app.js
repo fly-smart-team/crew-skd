@@ -6,7 +6,7 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.25-4'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.25-5'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
@@ -408,12 +408,21 @@
     for (const v of ['log', 'sum', 'print', 'set']) $('view-' + v).hidden = v !== view;
     document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-current', b.dataset.view === view ? 'page' : 'false'));
     $('title').textContent = { log: '로그북', sum: '요약', print: '출력', set: '설정' }[view];
-    render();
+    render(true);
     window.scrollTo(0, 0);
   }
   document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => show(b.dataset.view)));
+  document.addEventListener('focusout', () => setTimeout(() => {
+    if (S.renderPending && !typingIn(document.activeElement)) render();
+  }, 400));
 
-  function render() {
+  const typingIn = el => !!el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName) && el.type !== 'checkbox' && el.type !== 'file';
+
+  /** 현재 화면 다시 그리기. 그 화면에서 입력 중이면 입력이 끊기지 않게 미뤘다가 입력을 마치면 그림 */
+  function render(force) {
+    const view = $('view-' + S.view), a = document.activeElement;
+    if (!force && view && view.contains(a) && typingIn(a)) { S.renderPending = true; renderSync(); return; }
+    S.renderPending = false;
     if (S.view === 'log') renderLog();
     else if (S.view === 'sum') renderSummary();
     else if (S.view === 'print') renderPrint();
@@ -904,7 +913,9 @@
     S.entries = m.merged;
     S.entries.forEach(e => { if (photos.has(e.id)) e.hasPhoto = true; });
     const rs = backup.settings;
+    m.changed = changed.length;
     if (rs && (rs.updatedAt || 0) > (S.settings.updatedAt || 0)) {
+      m.changed++;
       S.settings = Object.assign({}, DEFAULT_SETTINGS, rs);
       airports = L.airportDB(S.settings.airports);
       await DB.set('settings', S.settings);
@@ -959,6 +970,7 @@
 
   async function sync(interactive) {
     if (S.syncing) return;
+    let changed = false;
     if (!navigator.onLine) { renderSync(); if (interactive) toast('오프라인입니다. 기록은 이 기기에 저장되어 있고, 인터넷이 되면 동기화합니다.'); return; }
     try {
       if (interactive && !DRIVE.signedIn()) {
@@ -968,7 +980,7 @@
       if (!DRIVE.signedIn()) { renderSync(); return; }
       S.syncing = true; renderSync();
       const id = await DRIVE.findFile(S.sync.fileId);
-      if (id) await applyRemote(L.readBackup(await DRIVE.download(id)));
+      if (id) { const m = await applyRemote(L.readBackup(await DRIVE.download(id))); if (m.changed) changed = true; }
       const newId = await DRIVE.upload(id, backupText());
       S.sync = { fileId: newId, lastSync: Date.now(), error: '' };
       await DB.set('sync', S.sync);
@@ -978,7 +990,8 @@
       if (interactive || !err.needLogin) toast('동기화 실패: ' + err.message, 7000);
     } finally {
       S.syncing = false;
-      render();
+      // 드라이브에서 받은 변경이 있을 때만 화면을 다시 그림 (입력 중인 칸이 끊기지 않게)
+      if (changed) render(); else renderSync();
     }
   }
 
