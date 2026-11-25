@@ -6,7 +6,7 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.25-9'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.25-10'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
@@ -80,7 +80,7 @@
           : `${esc(e.flightNumber || '편명 없음')} <span style="font-weight:600">${esc(airports.display(e.origin))}→${esc(airports.display(e.destination))}</span>`;
         const fnShort = { PIC: 'PIC', SIC: 'F/O', PICUS: 'PICUS', RELIEF: 'Relief', DUAL: 'Dual', OBS: 'OBS' }[L.fnOf(e)];
         const sub = [e.aircraftType && !e.isSimulator ? e.aircraftType : '', e.registration, e.isSimulator ? e.fstdType : fnShort,
-          L.instructingOf(e) ? 'IP' : '', e.examining ? '평가' : ''].filter(Boolean).map(esc).join(' · ');
+          L.instructingOf(e) ? 'IP' : '', e.examining ? '평가' : '', e.isSimulator ? '' : L.crewNamesOf(e).slice(0, 2).join(', ')].filter(Boolean).map(esc).join(' · ');
         const badges = e.planned ? [
           '<span class="badge plan">예정</span>',
           e.roleSure === false ? '<span class="badge warn">역할 확인</span>' : ''
