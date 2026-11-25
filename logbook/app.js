@@ -6,7 +6,7 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.25-1'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.25-2'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', defaultType: 'A321', defaultDuty: 'C',
@@ -259,7 +259,7 @@
     const hh = ms => (ms == null ? '' : L.zulu(ms));
     const role = ROLES.find(r => r[2] === e.takeoffs > 0 && r[3] === e.landings > 0);
     return Object.assign({
-      e, isNew: false, notes: [], photo: null, photoUrl: null,
+      e, isNew: false, notes: [], photo: null, photoUrl: null, screen: null, diag: null,
       outDate: e.out != null ? utcDate(e.out) : utcDate(Date.now()),
       hhmm: { out: hh(e.out), off: hh(e.off), on: hh(e.on), in: hh(e.in) },
       role: role ? role[0] : null
@@ -327,6 +327,21 @@
 
   const flagged = f => D.notes.some(n => n.field === f && n.kind !== 'derived');
 
+  /** 저장 전에 시각이 상식적인지 (오독으로 하루가 밀리는 경우 등) */
+  function timeProblems() {
+    const e = D.e, p = [];
+    if (e.isSimulator) return p;
+    const mins = (a, b) => (a != null && b != null ? Math.round((b - a) / MIN) : null);
+    const blk = mins(e.out, e.in), tout = mins(e.out, e.off), tin = mins(e.on, e.in), flt = mins(e.off, e.on);
+    if (blk != null && blk > 20 * 60) p.push(`Block이 ${L.hmm(blk)}입니다 (20시간 초과)`);
+    if (tout != null && tout > 150) p.push(`OUT→OFF 지상 이동이 ${L.hmm(tout)}입니다`);
+    if (tin != null && tin > 150) p.push(`ON→IN 지상 이동이 ${L.hmm(tin)}입니다`);
+    if (blk != null && flt != null && flt > blk) p.push('Flight가 Block보다 깁니다');
+    if (D.screen && D.screen.block != null && blk != null && blk !== D.screen.block) p.push(`화면의 BLOCK ${L.hmm(D.screen.block)}와 다릅니다 (지금 ${L.hmm(blk)})`);
+    if (D.screen && D.screen.flight != null && flt != null && flt !== D.screen.flight) p.push(`화면의 FLIGHT ${L.hmm(D.screen.flight)}와 다릅니다 (지금 ${L.hmm(flt)})`);
+    return p;
+  }
+
   function openEditor() {
     const e = D.e;
     $('edTitle').textContent = e.isSimulator ? '시뮬레이터' : D.isNew ? (D.notes.length || D.photoUrl ? '스캔 결과 확인' : '새 비행') : (e.flightNumber || '비행');
@@ -348,7 +363,12 @@
       <div>
         ${D.notes.length ? `<p style="margin:0 0 6px;font-weight:700;color:var(${problems.length ? '--warn' : '--ok'})">${problems.length ? '⚠ 확인이 필요한 값이 있습니다' : '✓ BLOCK·FLIGHT 검산 통과'}</p>` : ''}
         <ul class="notes">${D.notes.map(n => `<li class="${esc(n.kind)}">${esc(n.message)}</li>`).join('')}</ul>
+        ${!D.notes.length && D.e.scanRaw ? `<p class="help">스캔으로 입력한 기록입니다.</p>` : ''}
         ${D.isNew ? '<p class="help">사진과 아래 값을 한 번 비교한 뒤 저장하세요.</p>' : ''}
+        <div class="actions" style="margin:8px 0 0">
+          ${!D.isNew && D.photoUrl ? '<button type="button" class="btn sm" id="rescan">사진으로 다시 읽기</button>' : ''}
+          ${D.diag ? '<button type="button" class="btn sm" id="copyDiag">인식 결과 복사 (문제 신고용)</button>' : ''}
+        </div>
       </div></div></div>`;
   }
 
@@ -448,6 +468,8 @@
     if (simTime) simTime.addEventListener('change', () => { const v = L.parseHMM(simTime.value); if (v != null) e.block = v; simTime.value = L.hmm(e.block); });
     const del = $('edDelete');
     if (del) del.addEventListener('click', deleteDraft);
+    if ($('rescan')) $('rescan').addEventListener('click', rescanSaved);
+    if ($('copyDiag')) $('copyDiag').addEventListener('click', copyDiag);
     const ph = $('edPhoto');
     if (ph) ph.addEventListener('click', () => { $('photoBig').src = D.photoUrl; $('photoDlg').showModal(); });
   }
@@ -471,12 +493,14 @@
         const n = document.querySelector(`[data-apt-name="${f}"]`), a = airports.get(e[f]);
         if (n) n.textContent = a ? a.icao : (e[f] ? '목록에 없음' : '');
       }
-      const miss = missingFields();
+      const miss = missingFields(), probs = timeProblems();
       const o = airports.get(e.origin), d = airports.get(e.destination);
+      document.querySelectorAll('.oooi > div').forEach(x => x.classList.toggle('bad', probs.length > 0));
       $('calcHelp').textContent = miss.length ? '저장하려면: ' + miss.join(', ')
+        : probs.length ? '⚠ 시각을 확인하세요: ' + probs.join(' · ')
         : (!o || !d) ? '공항 좌표가 없어 야간 시간을 계산하지 못했습니다. 설정 › 공항에서 추가하거나 직접 입력하세요.'
           : `야간은 ${S.settings.night === 'sunset' ? '일몰~일출' : '시민박명(−6°)'} 기준으로 항로를 따라 1분 단위로 계산합니다. 직접 고치면 그 값이 유지됩니다.`;
-      $('calcHelp').style.color = miss.length ? 'var(--warn)' : '';
+      $('calcHelp').style.color = probs.length ? 'var(--bad)' : miss.length ? 'var(--warn)' : '';
     }
     $('edSave').disabled = missingFields().length > 0;
   }
@@ -485,6 +509,8 @@
     recalcDraft();
     if (missingFields().length) return;
     const e = D.e, now = Date.now();
+    const probs = timeProblems();
+    if (probs.length && !confirm('시각이 이상합니다:\n\n• ' + probs.join('\n• ') + '\n\n그래도 저장할까요?')) return;
     if (!e.isSimulator) e.flightNumber = e.flightNumber.toUpperCase().replace(/\s+/g, '');
     let target = e;
     if (D.isNew && !e.isSimulator) {
@@ -552,6 +578,24 @@
     } catch (e) { return null; }
   }
 
+  /** 사진 → 화면 값 → 편집 초안에 반영. captured: 촬영 시각(ms) 또는 null */
+  async function runScan(blob, captured, reliable) {
+    const res = await OCR.scan(blob, { airports, onStep: t => busy(true, t) });
+    const r = res.reading;
+    if (!r.isOOOIPage && r.out == null) return null;
+    const ref = L.referenceTime(r, captured || Date.now(), !!reliable);
+    const t = L.resolveTimes(r, ref);
+    Object.assign(D.e, { flightNumber: r.flightID || D.e.flightNumber || '', origin: r.origin || D.e.origin || '', destination: r.destination || D.e.destination || '',
+      out: t.out, off: t.off, on: t.on, in: t.in, source: 'scan', scanRaw: r.raw });
+    D.outDate = t.out != null ? utcDate(t.out) : D.outDate;
+    D.hhmm = { out: t.out != null ? L.zulu(t.out) : '', off: t.off != null ? L.zulu(t.off) : '', on: t.on != null ? L.zulu(t.on) : '', in: t.in != null ? L.zulu(t.in) : '' };
+    D.notes = r.notes;
+    D.screen = { block: r.block, flight: r.flight };
+    D.diag = { app: window.LOGBOOK_VERSION, ua: navigator.userAgent, passes: res.passes, confident: r.confident, raw: r.raw, notes: r.notes.map(n => n.kind + ': ' + n.message), sets: res.sets };
+    recalcDraft();
+    return r;
+  }
+
   $('scanFile').addEventListener('change', async ev => {
     const file = ev.target.files && ev.target.files[0];
     ev.target.value = '';
@@ -561,23 +605,15 @@
       const exif = await OCR.captureTime(file);
       const fresh = Math.abs(Date.now() - (file.lastModified || 0)) < 10 * 60000;
       const captured = exif || (fresh ? file.lastModified : null);
-      const res = await OCR.scan(file, { airports, onStep: t => busy(true, t) });
-      const r = res.reading;
-      if (!r.isOOOIPage && r.out == null) {
+      D = newFlightDraft();
+      const r = await runScan(file, captured, !!captured);
+      if (!r) {
         busy(false);
         toast('AOC OOOI STATUS 화면을 찾지 못했습니다. 화면이 잘 보이게 다시 찍어 주세요.', 6000);
         return;
       }
-      const ref = L.referenceTime(r, captured || Date.now(), !!captured);
-      const t = L.resolveTimes(r, ref);
-      D = newFlightDraft();
-      Object.assign(D.e, { flightNumber: r.flightID || '', origin: r.origin || '', destination: r.destination || '', out: t.out, off: t.off, on: t.on, in: t.in, source: 'scan' });
-      D.outDate = t.out != null ? utcDate(t.out) : D.outDate;
-      D.hhmm = { out: t.out != null ? L.zulu(t.out) : '', off: t.off != null ? L.zulu(t.off) : '', on: t.on != null ? L.zulu(t.on) : '', in: t.in != null ? L.zulu(t.in) : '' };
-      D.notes = r.notes;
       D.photo = await shrinkPhoto(file);
       if (D.photo) D.photoUrl = URL.createObjectURL(D.photo);
-      recalcDraft();
       busy(false);
       openEditor();
     } catch (err) {
@@ -585,6 +621,30 @@
       toast('글자 인식 실패: ' + (err && err.message || err), 7000);
     }
   });
+
+  /** 저장된 사진으로 다시 읽기 (기존 기록 고칠 때) */
+  async function rescanSaved() {
+    try {
+      const blob = await DB.getPhoto(D.e.id);
+      if (!blob) return toast('이 기록에는 사진이 없습니다.');
+      busy(true, '다시 읽는 중…');
+      const anchor = D.e.in != null ? D.e.in + 3 * 3600e3 : Date.now();
+      const r = await runScan(blob, anchor, true);
+      busy(false);
+      if (!r) return toast('OOOI 화면을 찾지 못했습니다.');
+      openEditor();
+      toast('다시 읽었습니다. 값을 확인하고 저장하세요.');
+    } catch (err) {
+      busy(false);
+      toast('다시 읽기 실패: ' + err.message, 6000);
+    }
+  }
+
+  async function copyDiag() {
+    const text = JSON.stringify(D.diag);
+    try { await navigator.clipboard.writeText(text); toast('인식 결과를 복사했습니다. 대화창에 붙여 넣어 보내 주세요.', 5000); }
+    catch (e) { downloadFile(text, 'ocr-result.json', 'application/json'); toast('인식 결과 파일을 내려받았습니다.'); }
+  }
 
   /* ===================== 백업·불러오기 ===================== */
 
@@ -712,8 +772,21 @@
 
   /* ===================== 시작 ===================== */
 
+  let installEvt = null;
+  window.addEventListener('beforeinstallprompt', ev => { ev.preventDefault(); installEvt = ev; const b = $('installNow'); if (b) b.hidden = false; });
+
   function installHint() {
     const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+    const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    $('installText').innerHTML = ios
+      ? 'Safari 공유 버튼 → <b>홈 화면에 추가</b>로 설치하면 비행기 모드에서도 열리고, 기록이 지워지지 않게 보호됩니다.'
+      : '브라우저 메뉴(⋮) → <b>홈 화면에 추가</b> 또는 <b>앱 설치</b>로 설치하면 비행기 모드에서도 열리고, 기록이 지워지지 않게 보호됩니다.';
+    $('installNow').addEventListener('click', async () => {
+      if (!installEvt) return;
+      installEvt.prompt();
+      await installEvt.userChoice.catch(() => {});
+      installEvt = null; $('installNow').hidden = true;
+    });
     let closed = false;
     try { closed = localStorage.getItem('logbook.installHintClosed') === '1'; } catch (e) { /* 무시 */ }
     $('installHint').hidden = standalone || closed;
