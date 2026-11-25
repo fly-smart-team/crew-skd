@@ -2,9 +2,9 @@
   "name": "crew-skd",
   "private": true,
   "version": "1.0.0",
-  "description": "MONTHLY SKD 엑셀 → 구글 캘린더",
+  "description": "MONTHLY SKD 엑셀 → 구글 캘린더 / 조종사 전자 로그북",
   "scripts": {
-    "test": "node --test tests/core.test.js"
+    "test": "node --test tests/core.test.js tests/logbook.test.js"
   },
   "devDependencies": {
     "xlsx": "0.18.5"

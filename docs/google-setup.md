@@ -5,6 +5,7 @@
 ## 1. 프로젝트 만들기
 1. https://console.cloud.google.com 에 접속해 상단에서 **새 프로젝트**를 만듭니다 (이름 예: `crew-skd`).
 2. **API 및 서비스 → 라이브러리**에서 **Google Calendar API**를 찾아 **사용**을 누릅니다.
+   - 로그북(`logbook/`)의 구글 드라이브 동기화를 쓰려면 같은 곳에서 **Google Drive API**도 **사용**으로 켭니다.
 
 ## 2. OAuth 동의 화면
 1. **API 및 서비스 → OAuth 동의 화면**(또는 **Google 인증 플랫폼**)으로 갑니다.
@@ -31,3 +32,7 @@
 ## 요청하는 권한
 - `calendar.events` — 일정 만들기, 중복 확인을 위한 일정 읽기
 - `calendar.calendarlist.readonly` — 넣을 캘린더 목록 보기
+- `drive.file` (로그북) — 로그북이 만든 `pilot-logbook.json` 파일만 읽고 쓰기. 드라이브의 다른 파일은 볼 수 없습니다.
+
+같은 클라이언트 ID를 두 앱이 같이 씁니다. 로그북은 `https://fly-smart-team.github.io/crew-skd/logbook/`에서 열리므로 승인된 JavaScript 원본을 따로 추가할 필요가 없습니다.
+OAuth 동의 화면이 "테스트" 상태라면 **데이터 액세스(범위)**에 `drive.file`을 추가해 두면 로그인 화면이 깔끔해집니다(안 해도 동작은 합니다).

@@ -1,0 +1,17 @@
+{
+  "name": "조종사 로그북",
+  "short_name": "로그북",
+  "description": "ACARS OOOI 화면을 찍으면 비행 시각이 자동으로 들어가는 조종사 전자 로그북",
+  "lang": "ko",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b1526",
+  "theme_color": "#0b1526",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

@@ -12,7 +12,7 @@
 | `claude-artifact/index.html` | Claude 아티팩트용 단일 파일 버전 (Claude의 Google Calendar 커넥터 사용) |
 | `tests/` | 가상 승무원 데이터로 만든 예시 `.xls`와 테스트 |
 | `docs/google-setup.md` | Google OAuth 클라이언트 ID 만드는 법 |
-| `ios-logbook/` | **iPad 전자 로그북.** OOOI 화면 사진 자동 입력, iCloud 동기화, 구글 드라이브 백업. [ios-logbook/README.md](ios-logbook/README.md) |
+| `logbook/` | **조종사 전자 로그북 (웹앱).** OOOI 화면 사진 자동 입력, 오프라인 저장, 구글 드라이브 동기화. [logbook/README.md](logbook/README.md) |
 
 > `claude-artifact/index.html`은 한 파일로 돌아가야 해서 해석 로직을 자체적으로 들고 있습니다. `skd-core.js`를 고치면 그쪽도 같이 맞춰 주세요.
 

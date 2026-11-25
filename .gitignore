@@ -4,10 +4,3 @@ node_modules/
 *.xlsx
 !tests/fixtures/*.xls
 .DS_Store
-
-# iOS 로그북 (XcodeGen이 만드는 프로젝트·빌드 산출물)
-ios-logbook/PilotLogbook.xcodeproj/
-ios-logbook/Config/
-ios-logbook/LogbookCore/.build/
-ios-logbook/LogbookCore/.swiftpm/
-DerivedData/

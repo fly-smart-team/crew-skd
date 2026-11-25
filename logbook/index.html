@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>조종사 로그북</title>
+<meta name="description" content="ACARS OOOI 화면을 찍으면 비행 시각이 자동으로 들어가는 조종사 전자 로그북">
+<meta name="theme-color" content="#0b1526">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="로그북">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="../config.js"></script>
+<script src="vendor/tesseract/tesseract.min.js"></script>
+<script src="logbook-core.js"></script>
+<script src="ocr.js"></script>
+<script src="store.js"></script>
+<script src="drive.js"></script>
+<style>
+/* VOICE: crew-room practical, calm — same family as the SKD→캘린더 page
+   IDEA: a logbook as a departure board — each flight a row, block time hanging on the right
+   COLOUR and TYPE: night-sky navy ground, white ink, sky-cyan accent; Plex Sans KR + Plex Mono for every time */
+:root{color-scheme:light dark;--bg:light-dark(#f4f6fa,#0b1526);--card:light-dark(#fff,#13213a);--ink:light-dark(#0d1b30,#eef3fb);--mute:light-dark(#5a6a82,#93a3bd);--line:light-dark(#dde3ec,#22324f);--acc:light-dark(#0f6fd6,#5fb8ff);--acc-ink:light-dark(#fff,#04213f);--ok:light-dark(#11834f,#4fd39a);--warn:light-dark(#a35b00,#ffb454);--bad:light-dark(#c0362c,#ff7a6e);--chip:light-dark(#eaf1fb,#1b2e4f)}
+:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}
+*{box-sizing:border-box;min-width:0}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "IBM Plex Sans KR",system-ui,sans-serif;overflow-x:clip;padding-bottom:calc(84px + env(safe-area-inset-bottom))}
+.wrap{max-width:900px;margin:0 auto;padding:calc(12px + env(safe-area-inset-top)) max(4vw,16px) 24px}
+h1{font-size:clamp(24px,5vw,32px);line-height:1.1;margin:6px 0 2px}
+h2{font-size:18px;margin:26px 0 10px}
+.mono,.t{font-family:"IBM Plex Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.sync{display:flex;gap:8px;align-items:center;font-size:14px;color:var(--mute)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--mute);flex:none}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
+.btn{font:inherit;font-weight:600;border:0;border-radius:10px;min-height:44px;padding:0 16px;cursor:pointer;background:var(--chip);color:var(--ink);display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;white-space:nowrap}
+.btn.pri{background:var(--acc);color:var(--acc-ink)}
+.btn.sm{min-height:36px;padding:0 12px;font-size:14px}
+.btn.danger{color:var(--bad)}
+.btn:disabled{opacity:.5;cursor:default}
+:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+.actions{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}
+.actions .grow{flex:1 1 220px;min-height:56px;font-size:17px}
+input,select,textarea{font:inherit;font-size:16px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;min-height:42px;padding:0 10px;width:100%}
+textarea{padding:8px 10px;min-height:70px;resize:vertical}
+.search{margin:4px 0 8px}
+.banner{background:var(--chip);border-radius:12px;padding:12px 14px;font-size:14px;margin:12px 0;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+
+/* 보드 */
+.month{display:flex;justify-content:space-between;align-items:baseline;margin:22px 4px 4px;color:var(--mute);font-size:14px;font-weight:600}
+.board{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.row{display:grid;grid-template-columns:56px minmax(0,1fr) auto auto;gap:2px 14px;align-items:center;padding:12px 4px;border-bottom:1px solid var(--line);cursor:pointer}
+.row:hover{background:color-mix(in srgb,var(--chip) 60%,transparent)}
+.row .d{font:500 14px/1.2 "IBM Plex Mono",monospace;color:var(--mute)}
+.row .ttl{font-weight:700;font-size:17px;line-height:1.3}
+.row .sub{font-size:13px;color:var(--mute)}
+.badges{display:flex;gap:6px;align-items:center}
+.badge{font-size:12px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--chip);white-space:nowrap}
+.blk{text-align:right}
+.blk .t{font-size:21px;font-weight:600;line-height:1.1;display:block}
+.blk small{font:500 12px "IBM Plex Mono",monospace;color:var(--mute)}
+.empty{padding:36px 8px;color:var(--mute);text-align:center}
+@media(max-width:600px){.row{grid-template-columns:48px minmax(0,1fr) auto}.badges{grid-column:2;grid-row:2}.blk{grid-row:1/3;grid-column:3}}
+
+/* 요약 */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,170px),1fr));gap:10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.card label{display:block;font-size:13px;color:var(--mute)}
+.card .t{font-size:24px;font-weight:600}
+.rec{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+.rec table{border-collapse:collapse;width:100%;max-width:420px;margin-top:8px}
+.rec th,.rec td{padding:4px 8px;text-align:right;font-variant-numeric:tabular-nums}
+.rec th:first-child,.rec td:first-child{text-align:left}
+.rec th{font-size:13px;color:var(--mute);font-weight:600}
+.state{font-weight:700}.state.ok{color:var(--ok)}.state.warn{color:var(--warn)}
+
+/* 설정 */
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px 14px}
+.field label{display:block;font-size:13px;color:var(--mute);margin-bottom:4px}
+.help{font-size:13px;color:var(--mute);margin:6px 0}
+.list-plain{list-style:none;padding:0;margin:8px 0}
+.list-plain li{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line);font-size:14px}
+
+/* 탭 */
+.tabs{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);display:flex;justify-content:center;padding:6px max(4vw,10px) calc(6px + env(safe-area-inset-bottom));z-index:5}
+.tabs button{flex:0 1 160px;font:inherit;font-size:14px;font-weight:600;background:none;border:0;color:var(--mute);min-height:52px;border-radius:10px;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.tabs button[aria-current=page]{color:var(--acc);background:var(--chip)}
+.tabs svg{width:22px;height:22px}
+
+/* 편집 */
+dialog{border:0;padding:0;background:var(--bg);color:var(--ink);width:100%;max-width:760px;max-height:100dvh;height:100dvh;margin:0 auto}
+@media(min-width:800px){dialog{height:auto;max-height:92dvh;margin:4dvh auto;border-radius:16px;border:1px solid var(--line)}}
+dialog::backdrop{background:rgba(3,10,22,.6)}
+.ed-head{position:sticky;top:0;background:var(--card);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:8px;padding:calc(8px + env(safe-area-inset-top)) 14px 8px;z-index:2}
+.ed-head b{font-size:17px}
+.ed-body{padding:4px 16px 40px}
+.sec{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:14px 0}
+.sec h3{font-size:14px;color:var(--mute);margin:0 0 8px;font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:10px 12px}
+.oooi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+@media(max-width:520px){.oooi{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.oooi input{font:600 22px "IBM Plex Mono",monospace;text-align:center;letter-spacing:.06em;min-height:52px}
+.oooi .when{display:block;text-align:center;font:500 12px "IBM Plex Mono",monospace;color:var(--mute);margin-top:4px}
+.flag input,input.flag{border-color:var(--warn);box-shadow:0 0 0 1px var(--warn)}
+.calc{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr));gap:10px}
+.calc .v{font:600 20px "IBM Plex Mono",monospace}
+.notes{list-style:none;margin:0;padding:0;font-size:14px}
+.notes li{padding:3px 0}
+.notes .missing,.notes .mismatch{color:var(--bad)}.notes .corrected,.notes .guessed,.notes .unknownAirport{color:var(--warn)}.notes .derived{color:var(--mute)}
+.scan-top{display:flex;gap:14px;align-items:flex-start}
+.scan-top img{width:120px;border-radius:8px;flex:none;cursor:zoom-in}
+.role{display:flex;gap:6px;flex-wrap:wrap}
+.role button{flex:1 1 110px;min-height:44px;font:inherit;font-size:15px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:8px;cursor:pointer}
+.role button[aria-pressed=true]{background:var(--acc);border-color:var(--acc);color:var(--acc-ink);font-weight:700}
+.role.need button{border-color:var(--warn)}
+.why{font-size:13px;color:var(--warn);margin-top:6px}
+
+/* 진행·알림 */
+.busy{position:fixed;inset:0;background:rgba(3,10,22,.7);display:none;align-items:center;justify-content:center;z-index:20;color:#eef3fb;flex-direction:column;gap:14px;font-size:17px;text-align:center;padding:20px}
+.busy.on{display:flex}
+.spin{width:44px;height:44px;border:4px solid rgba(255,255,255,.25);border-top-color:#5fb8ff;border-radius:50%;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(1turn)}}
+@media (prefers-reduced-motion:reduce){.spin{animation-duration:3s}}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(84px + env(safe-area-inset-bottom));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;z-index:30;max-width:min(92vw,560px);opacity:0;pointer-events:none;transition:opacity .2s}
+.toast.on{opacity:1}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1 id="title">로그북</h1>
+    <div class="sync"><span class="dot" id="syncDot"></span><span id="syncText">이 기기에 저장됨</span>
+      <button class="btn sm" id="syncBtn">구글 드라이브 연결</button></div>
+  </div>
+
+  <div class="banner" id="installHint" hidden>
+    <span>Safari 공유 버튼 → <b>홈 화면에 추가</b>로 설치하면 비행기 모드에서도 열리고, 기록이 지워지지 않게 보호됩니다.</span>
+    <button class="btn sm" id="installClose">닫기</button>
+  </div>
+
+  <!-- 로그북 -->
+  <section id="view-log">
+    <div class="actions">
+      <label class="btn pri grow" for="scanFile">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2"/><circle cx="12" cy="12" r="3.5"/></svg>
+        OOOI 화면 찍기</label>
+      <input type="file" id="scanFile" accept="image/*" hidden>
+      <button class="btn" id="addManual">+ 직접 입력</button>
+      <button class="btn" id="addSim">+ 시뮬레이터</button>
+    </div>
+    <input class="search" id="search" type="search" placeholder="편명, HL, 공항, 날짜로 찾기" aria-label="기록 찾기">
+    <div id="board"></div>
+  </section>
+
+  <!-- 요약 -->
+  <section id="view-sum" hidden></section>
+
+  <!-- 설정 -->
+  <section id="view-set" hidden></section>
+</div>
+
+<nav class="tabs" aria-label="화면">
+  <button data-view="log" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/></svg>로그북</button>
+  <button data-view="sum"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>요약</button>
+  <button data-view="set"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>설정</button>
+</nav>
+
+<dialog id="ed" aria-labelledby="edTitle">
+  <div class="ed-head">
+    <button class="btn sm" id="edCancel">취소</button>
+    <b id="edTitle">새 비행</b>
+    <button class="btn sm pri" id="edSave">저장</button>
+  </div>
+  <div class="ed-body" id="edBody"></div>
+</dialog>
+
+<dialog id="photoDlg" aria-label="스캔 사진">
+  <div class="ed-head"><span></span><b>스캔 사진</b><button class="btn sm" id="photoClose">닫기</button></div>
+  <div style="overflow:auto;padding:10px"><img id="photoBig" alt="OOOI 화면 사진" style="width:100%;height:auto"></div>
+</dialog>
+
+<input type="file" id="importFile" accept="application/json,.json" hidden>
+<div class="busy" id="busy" role="status" aria-live="polite"><div class="spin"></div><div id="busyText">읽는 중…</div></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
