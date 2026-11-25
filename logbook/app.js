@@ -6,7 +6,7 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.25-8'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.25-9'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
@@ -50,14 +50,19 @@
     const q = S.search.trim().toUpperCase();
     let list = live().sort((a, b) => (a.logDate === b.logDate ? L.eventTime(b) - L.eventTime(a) : a.logDate < b.logDate ? 1 : -1));
     if (q) {
+      const qn = q.replace(/\s+/g, '');
       list = list.filter(e => [e.flightNumber, e.registration, e.aircraftType, airports.display(e.origin), airports.display(e.destination), e.origin, e.destination, e.logDate, e.remarks]
-        .some(x => String(x || '').toUpperCase().includes(q)));
+        .some(x => String(x || '').toUpperCase().includes(q)) || L.crewNamesOf(e).some(n => n.toUpperCase().replace(/\s+/g, '').includes(qn)));
     }
     const board = $('board');
     const stale = S.entries.filter(e => e.planned && !e.deleted && e.schedOut != null && e.schedOut < Date.now() - 36 * 3600e3);
     const staleHtml = stale.length && !q ? `<div class="banner"><span>기록하지 않은 <b>지난 예정 비행 ${stale.length}건</b>이 있습니다. 비행했으면 눌러서 시각을 넣고, 취소된 비행이면 정리하세요.</span><button class="btn sm" id="clearStale">지난 예정 정리</button></div>` : '';
+    const people = q.length >= 2 ? L.crewIndex(S.entries, q).slice(0, 5) : [];
+    const ymd = d => d.replace(/-/g, '/');
+    const peopleHtml = people.length ? `<div class="banner" style="display:block"><b>함께 탄 사람</b><ul class="list-plain" style="margin:6px 0 0">${people.map(p =>
+      `<li><span><b>${esc(p.name)}</b> — 함께 ${p.count}회</span><span class="help mono">${p.count > 1 ? ymd(p.first) + ' ~ ' : ''}${ymd(p.last)}</span></li>`).join('')}</ul></div>` : '';
     if (!list.length) {
-      board.innerHTML = `<p class="empty">${q ? '찾는 기록이 없습니다.' : '아직 기록이 없습니다.<br><b>📅 스케줄 가져오기</b>로 이번 달 비행을 미리 넣어 두거나,<br>비행 후 MCDU의 <b>AOC › OOOI STATUS</b> 화면을 <b>OOOI 화면 찍기</b>로 찍으세요.'}</p>`;
+      board.innerHTML = peopleHtml + `<p class="empty">${q ? '찾는 기록이 없습니다.' : '아직 기록이 없습니다.<br><b>📅 스케줄 가져오기</b>로 이번 달 비행을 미리 넣어 두거나,<br>비행 후 MCDU의 <b>AOC › OOOI STATUS</b> 화면을 <b>OOOI 화면 찍기</b>로 찍으세요.'}</p>`;
       return;
     }
     const groups = new Map();
@@ -95,7 +100,7 @@
       }
       html += '</ul>';
     }
-    board.innerHTML = staleHtml + html;
+    board.innerHTML = peopleHtml + staleHtml + html;
     const cs = $('clearStale');
     if (cs) cs.addEventListener('click', async () => {
       if (!confirm(`지난 예정 비행 ${stale.length}건을 지울까요?\n(실제로 비행한 것은 먼저 눌러서 기록해 두세요)`)) return;
@@ -129,6 +134,7 @@
     const rec = L.recency(S.entries, Date.now());
     const faa = L.faaCurrency(S.entries, Date.now(), ctx());
     const career = L.careerAt(st.careers, todayIn(st.tz));
+    const crewTop = L.crewIndex(S.entries).slice(0, 10);
     const card = (label, v) => `<div class="card"><label>${label}</label><span class="t">${v}</span></div>`;
     const state = (ok, okText, badText) => `<span class="state ${ok ? 'ok' : 'warn'}">${ok ? '✓ ' + okText : '⚠ ' + badText}</span>`;
     const timeCards = L.TOTAL_FIELDS.filter(([k, , kind]) => kind === 'time' && (tot[k] || ['total', 'pic', 'sic', 'night', 'ifr'].includes(k)))
@@ -162,9 +168,20 @@
       <div class="cards">${timeCards}</div>
       <div class="cards" style="margin-top:10px">${countCards}</div>
       <p class="help">${c.asOf ? `이월 누계(${esc(c.asOf)}까지) + 그 뒤 앱 기록. ` : ''}설정 › 이월 누계에서 바꿀 수 있습니다.</p>
+      ${crewTop.length ? `<h2>자주 함께 탄 조종사</h2>
+      <ul class="list-plain">${crewTop.map(p => `<li><button class="btn sm" data-crew="${esc(p.name)}">${esc(p.name)}</button><span class="help mono">${p.count}회 · 마지막 ${esc(p.last.replace(/-/g, '/'))}</span></li>`).join('')}</ul>
+      <p class="help">이름을 누르면 함께 탄 비행만 보여 줍니다. 로그북 탭 검색창에 이름을 넣어도 됩니다.</p>` : ''}
       <h2>이번 달 (${esc(month.replace('-', '년 '))}월)</h2>
       <div class="cards">${card('비행시간', L.hmm(mon.total))}${card('편수', mon.flights)}${card('기장', L.hmm(mon.pic))}${card('야간', L.hmm(mon.night))}${card('이착륙', mon.takeoffs + ' / ' + mon.landings)}</div>`;
   }
+
+  $('view-sum').addEventListener('click', ev => {
+    const b = ev.target.closest('[data-crew]');
+    if (!b) return;
+    S.search = b.dataset.crew;
+    $('search').value = S.search;
+    show('log');
+  });
 
   /* ===================== 설정 ===================== */
 
@@ -459,6 +476,7 @@
     const role = ROLES.find(r => r[2] === e.takeoffs > 0 && r[3] === e.landings > 0);
     return Object.assign({
       e, isNew: false, notes: [], photo: null, photoUrl: null, screen: null, diag: null,
+      sched: { date: e.schedOut != null ? utcDate(e.schedOut) : '', std: e.schedOut != null ? L.zulu(e.schedOut) : '', sta: e.schedIn != null ? L.zulu(e.schedIn) : '' },
       outDate: e.out != null ? utcDate(e.out) : utcDate(Date.now()),
       hhmm: { out: hh(e.out), off: hh(e.off), on: hh(e.on), in: hh(e.in) },
       role: role ? role[0] : null
@@ -572,6 +590,7 @@
     else body.innerHTML = flightForm();
     bindEditor();
     refreshComputed();
+    refreshSched();
     const dlg = $('ed');
     if (!dlg.open) dlg.showModal();
     body.scrollTop = 0;
@@ -596,15 +615,70 @@
 
   function planSection() {
     const e = D.e;
-    if (!D.fromPlan && e.schedOut == null) return '';
-    const z = ms => (ms != null ? L.zulu(ms) + 'Z' : '-');
-    return `<div class="sec"><h3>스케줄</h3>
-      <p style="margin:0 0 6px">${e.schedFlight && e.schedFlight !== e.flightNumber ? `<span class="mono">${esc(e.schedFlight)}</span> · ` : ''}STD <b class="mono">${z(e.schedOut)}</b> · STA <b class="mono">${z(e.schedIn)}</b>${e.schedOut != null && e.schedIn != null ? ` · 예정 ${L.hmm(Math.round((e.schedIn - e.schedOut) / MIN))}` : ''}${e.acCode ? ` · 기종 코드 <b class="mono">${esc(e.acCode)}</b>` : ''}</p>
-      ${e.crew ? `<p class="help" style="margin:0 0 6px">함께 탄 승무원: ${esc(e.crew)}</p>` : ''}
-      ${e.roleSure === false ? '<p class="why" style="margin:0 0 6px">스케줄에서 역할(POSN)을 확인하지 못해 직급으로 추정했습니다. 아래 역할을 확인하세요.</p>' : ''}
-      ${D.fromPlan ? `<div class="actions" style="margin:8px 0 0"><label class="btn pri" for="scanInto">📷 OOOI 화면 찍어서 시각 넣기</label></div>
-      <p class="help">또는 아래 OOOI 칸에 4자리로 직접 넣으세요.</p>` : ''}
+    if (!D.fromPlan && !D.isNew && e.schedOut == null) return '';
+    if (D.isNew && !D.fromPlan && (D.photo || D.notes.length)) return ''; // 사진으로 스캔한 새 비행
+    const sc = D.sched;
+    const canPlan = D.fromPlan || D.isNew;
+    return `<div class="sec"><h3>스케줄${D.isNew && !D.fromPlan ? ' (선택 — 아직 비행 전이면 예정으로 저장)' : ''}</h3>
+      ${e.schedFlight && e.schedFlight !== e.flightNumber ? `<p class="help" style="margin:0 0 6px">스케줄 편명 <span class="mono">${esc(e.schedFlight)}</span></p>` : ''}
+      <div class="grid">
+        <div class="field"><label>STD 날짜 (UTC)</label><input type="date" id="schedDate" value="${esc(sc.date)}"></div>
+        <div class="field"><label>STD (UTC)</label><input id="schedStd" class="mono" inputmode="numeric" maxlength="4" placeholder="HHMM" value="${esc(sc.std)}"></div>
+        <div class="field"><label>STA (UTC)</label><input id="schedSta" class="mono" inputmode="numeric" maxlength="4" placeholder="HHMM" value="${esc(sc.sta)}"></div>
+      </div>
+      <p class="help" id="schedInfo" style="margin:6px 0"></p>
+      ${e.acCode ? `<p class="help" style="margin:0 0 6px">스케줄 기종 코드 <span class="mono">${esc(e.acCode)}</span></p>` : ''}
+      ${e.crew ? `<p class="help" style="margin:0 0 6px">스케줄 승무원: ${esc(e.crew)}</p>` : ''}
+      ${e.roleSure === false ? '<p class="why" style="margin:0 0 6px">스케줄에서 역할을 확실히 읽지 못해 추정했습니다. 아래 역할을 확인하세요.</p>' : ''}
+      <div class="actions" style="margin:8px 0 0">
+        ${D.fromPlan ? '<label class="btn pri" for="scanInto">📷 OOOI 화면 찍어서 시각 넣기</label>' : ''}
+        ${canPlan ? '<button type="button" class="btn" id="savePlan">예정으로 저장</button>' : ''}
+      </div>
+      ${D.fromPlan ? '<p class="help">당일 바뀐 편명·구간·시각·승무원은 고친 뒤 <b>예정으로 저장</b>하세요. 비행 후에는 OOOI 시각을 넣고 위의 <b>저장</b>을 누르면 기록이 됩니다.</p>' : ''}
     </div>`;
+  }
+
+  /** 스케줄 칸(STD 날짜 + STD/STA HHMM) → UTC 시각 */
+  function resolveSched() {
+    const sc = D.sched, d = /^\d{4}-\d{2}-\d{2}$/.test(sc.date) ? Date.UTC(+sc.date.slice(0, 4), +sc.date.slice(5, 7) - 1, +sc.date.slice(8, 10)) : null;
+    const m = v => (/^\d{4}$/.test(v || '') ? L.clock.fromDigits(v) : null);
+    const so = d != null && m(sc.std) != null ? d + m(sc.std) * MIN : null;
+    let si = null;
+    if (so != null && m(sc.sta) != null) { si = Math.floor(so / DAY) * DAY + m(sc.sta) * MIN; if (si < so) si += DAY; }
+    return { schedOut: so, schedIn: si };
+  }
+
+  function refreshSched() {
+    const el = $('schedInfo');
+    if (!el) return;
+    const r = resolveSched();
+    const kst = ms => L.dateIn(ms, 'Asia/Seoul').slice(5).replace('-', '/') + ' ' + new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(ms));
+    el.textContent = r.schedOut == null ? 'STD를 넣으면 예정으로 저장할 수 있습니다.'
+      : `한국 시간 STD ${kst(r.schedOut)}${r.schedIn != null ? ` · STA ${kst(r.schedIn)} · 예정 ${L.hmm(Math.round((r.schedIn - r.schedOut) / MIN))}` : ''}`;
+  }
+
+  async function savePlanned() {
+    const e = D.e, r = resolveSched();
+    const miss = [];
+    if (!e.flightNumber.trim()) miss.push('편명');
+    if (!e.origin || !e.destination) miss.push('출발·도착');
+    if (r.schedOut == null) miss.push('STD');
+    if (miss.length) return toast('예정으로 저장하려면: ' + miss.join(', '), 4000);
+    const t = Object.assign({}, e, {
+      planned: true, schedOut: r.schedOut, schedIn: r.schedIn, out: null, off: null, on: null, in: null,
+      flightNumber: e.flightNumber.toUpperCase().replace(/\s+/g, ''), logDate: L.dateIn(r.schedOut, S.settings.tz),
+      // 앱에서 고친 스케줄 예정 비행은 다음 스케줄 가져오기 때 "취소"로 잘못 지우지 않도록 표시
+      source: e.source === 'schedule' ? 'schedule-edited' : (e.source === 'scan' ? 'manual' : e.source || 'manual'),
+      updatedAt: Date.now()
+    });
+    if (D.isNew) t.createdAt = Date.now();
+    await DB.putEntry(t);
+    const i = S.entries.findIndex(x => x.id === t.id);
+    if (i >= 0) S.entries[i] = t; else S.entries.push(t);
+    closeEditor();
+    render(true);
+    toast('예정 비행으로 저장했습니다.');
+    markDirty();
   }
 
   function flightForm() {
@@ -623,7 +697,9 @@
       </div></div>
       <div class="sec"><h3>역할 ${D.career ? `<span class="help">— 경력 단계 "${esc(D.career.title || L.FUNCTIONS[D.career.fn].label)}" 기준</span>` : ''}</h3><div class="grid">
         <div class="field"><label>이 비행에서 나의 역할</label><select id="fnSel">${Object.entries(L.FUNCTIONS).map(([k, v]) => `<option value="${k}"${L.fnOf(e) === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}</select></div>
-        <div class="field" id="picNameBox"><label>기장 이름 (ICAO 8번 칸)</label><input data-f="picName" value="${esc(e.picName)}" placeholder="HONG GILDONG" autocomplete="off"></div>
+        <div class="field" id="picNameBox"><label>기장 이름 (ICAO 8번 칸)</label><input data-f="picName" value="${esc(e.picName)}" placeholder="HONG GILDONG" autocomplete="off" list="crewNames"></div>
+        <div class="field"><label>함께 탄 조종사 (부기장 등, 여럿이면 쉼표)</label><input data-f="copilotName" value="${esc(e.copilotName)}" placeholder="KIM CHULSOO" autocomplete="off" list="crewNames"></div>
+        <datalist id="crewNames">${L.crewIndex(S.entries).slice(0, 200).map(x => `<option value="${esc(x.name)}">`).join('')}</datalist>
         <div class="field"><label>추가 역할</label>
           <label style="display:inline-flex;gap:6px;align-items:center;margin-right:14px"><input type="checkbox" data-chk="instructing" ${L.instructingOf(e) ? 'checked' : ''} style="width:auto;min-height:0"> 교관 비행 (IP)</label>
           <label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" data-chk="examining" ${e.examining ? 'checked' : ''} style="width:auto;min-height:0"> 심사 비행 (평가관)</label></div>
@@ -693,6 +769,16 @@
         if (i < 3) body.querySelector(`[data-t="${order[i + 1]}"]`).focus();
       }
     }));
+    for (const id of ['schedDate', 'schedStd', 'schedSta']) {
+      const el = $(id);
+      if (!el) continue;
+      el.addEventListener('input', () => {
+        if (id !== 'schedDate') el.value = el.value.replace(/\D/g, '').slice(0, 4);
+        D.sched[{ schedDate: 'date', schedStd: 'std', schedSta: 'sta' }[id]] = el.value;
+        refreshSched();
+      });
+    }
+    if ($('savePlan')) $('savePlan').addEventListener('click', () => savePlanned().catch(err => toast('저장 실패: ' + err.message, 6000)));
     const fnSel = $('fnSel');
     if (fnSel) fnSel.addEventListener('change', () => { e.fn = fnSel.value; D.fnTouched = true; recalcDraft(); refreshComputed(); });
     body.querySelectorAll('[data-chk]').forEach(el => el.addEventListener('change', () => { e[el.dataset.chk] = el.checked; recalcDraft(); refreshComputed(); }));
@@ -774,6 +860,7 @@
     const probs = timeProblems();
     if (probs.length && !confirm('시각이 이상합니다:\n\n• ' + probs.join('\n• ') + '\n\n그래도 저장할까요?')) return;
     if (!e.isSimulator) e.flightNumber = e.flightNumber.toUpperCase().replace(/\s+/g, '');
+    if (!e.isSimulator && $('schedStd')) { const rs = resolveSched(); if (rs.schedOut != null) { e.schedOut = rs.schedOut; e.schedIn = rs.schedIn; } }
     let target = e;
     if (D.isNew && !e.isSimulator) {
       const dup = live().find(x => x.id !== e.id && !x.isSimulator && x.logDate === e.logDate && x.flightNumber === e.flightNumber);
@@ -980,7 +1067,10 @@
       const unsure = r.add.filter(e => !e.roleSure).length;
       const ym = D0.month ? `${D0.month.slice(0, 4)}년 ${+D0.month.slice(4)}월` : '';
       const fmtName = r.format === 'cwp' ? 'Crew Roster' : 'MONTHLY SKD';
-      if (!r.add.length && !r.updated.length) return toast(`${ym} ${fmtName}: 새로 넣을 비행이 없습니다 (이미 있음 ${r.skipped}건).`, 5000);
+      if (!r.add.length && !r.updated.length) {
+        if (r.cancelled.length) { await askCancelled(r.cancelled); return; }
+        return toast(`${ym} ${fmtName}: 새로 넣을 비행이 없습니다 (이미 있음 ${r.skipped}건).`, 5000);
+      }
       const codes = [...new Set(r.add.map(e => e.acCode).filter(c => c && !L.AIRCRAFT_ALIASES[c] && !(S.settings.aircraft || []).some(t => t.code === c)))];
       const msg = `${ym} 스케줄 · ${fmtName} (${D0.me || D0.emp})\n\n• 새 예정 비행 ${r.add.length}건\n• 시각이 바뀐 예정 비행 ${r.updated.length}건\n• 이미 있음 ${r.skipped}건` +
         (r.other && r.other.length ? `\n• 비행이 아닌 일정 ${r.other.length}건은 건너뜀 (${r.other.slice(0, 4).join(', ')}${r.other.length > 4 ? ' …' : ''})` : '') +
@@ -995,11 +1085,24 @@
       render(true);
       toast(`예정 비행 ${r.add.length}건을 넣었습니다. 비행 후 눌러서 시각만 넣으면 됩니다.`, 5000);
       markDirty();
+      if (r.cancelled.length) await askCancelled(r.cancelled);
     } catch (err) {
       busy(false);
       toast('스케줄을 읽지 못했습니다: ' + err.message, 7000);
     }
   });
+
+  /** 새 스케줄에 없는 예정 비행 → 취소로 보고 지울지 묻기 */
+  async function askCancelled(list) {
+    const lines = list.slice(0, 10).map(e => `• ${e.logDate.slice(5).replace('-', '/')} ${e.flightNumber} ${airports.display(e.origin)}→${airports.display(e.destination)}`).join('\n');
+    if (!confirm(`새 스케줄에 없는 예정 비행이 ${list.length}건 있습니다 (취소되거나 바뀐 것으로 보입니다).\n\n${lines}${list.length > 10 ? '\n…' : ''}\n\n지울까요?\n(앱에서 직접 고치거나 추가한 예정 비행은 그대로 둡니다)`)) return;
+    const now = Date.now(), gone = list.map(e => Object.assign({}, e, { deleted: true, updatedAt: now }));
+    await DB.putEntries(gone);
+    gone.forEach(g => { const i = S.entries.findIndex(x => x.id === g.id); if (i >= 0) S.entries[i] = g; });
+    render(true);
+    toast(`취소된 예정 비행 ${gone.length}건을 지웠습니다.`);
+    markDirty();
+  }
 
   /* ===================== 백업·불러오기 ===================== */
 

@@ -517,3 +517,51 @@ test('회사 기종 코드 → A321', () => {
   // 설정에서 코드를 따로 정하면 그게 우선
   assert.equal(LS.importRoster(cwpRows(), { aircraft: [{ code: '32A', name: 'Airbus A321neo' }] }).add[0].aircraftType, '32A');
 });
+
+/* ===== 함께 탄 조종사 · 취소된 비행 ===== */
+test('스케줄에서 함께 탄 조종사 이름', () => {
+  const a = LS.importRoster(cwpRows('P1'), {}).add[0];
+  assert.equal(a.picName, '');
+  assert.equal(a.copilotName, 'KIM FO');
+  const b = LS.importRoster(cwpRows('F1'), {}).add[0];
+  assert.equal(b.picName, 'PARK CAP');
+  assert.equal(b.copilotName, '');
+  const s = LS.importRoster(skdRows(), {}).add[0];
+  assert.equal(s.copilotName, '김부기');
+});
+
+test('다시 가져올 때 빠진 예정 비행 = 취소', () => {
+  const first = LS.importRoster(cwpRows(), {}).add;
+  const manual = L.newEntry({ planned: true, source: 'manual', flightNumber: 'KE999', logDate: '2026-12-10', schedOut: utc(2026, 12, 10, 0, 0) });
+  const gone = L.newEntry({ planned: true, source: 'schedule', flightNumber: 'KE111', logDate: '2026-12-09', schedOut: utc(2026, 12, 9, 0, 0) });
+  const outside = L.newEntry({ planned: true, source: 'schedule', flightNumber: 'KE222', logDate: '2026-11-30', schedOut: utc(2026, 11, 30, 0, 0) });
+  const r = LS.importRoster(cwpRows(), { existing: first.concat([manual, gone, outside]) });
+  assert.equal(r.add.length, 0);
+  assert.deepEqual(r.cancelled.map(e => e.flightNumber), ['KE111']); // 직접 만든 것·기간 밖은 그대로
+});
+
+test('함께 탄 사람 찾기', () => {
+  const mk = (d, extra) => L.recalc(L.newEntry(Object.assign({ origin: 'RKSI', destination: 'RJBB', out: utc(2026, 11, d, 0, 0), in: utc(2026, 11, d, 2, 0) }, extra)), { takeoff: true, landing: true });
+  const list = [
+    mk(1, { fn: 'PIC', copilotName: 'KIM FO' }),
+    mk(5, { fn: 'PIC', copilotName: 'kim fo, LEE FO' }),
+    mk(9, { fn: 'SIC', picName: 'PARK CAP', crewList: [{ name: 'PARK CAP', rank: 'CAP', code: 'P1' }] }),
+    Object.assign(L.newEntry({ planned: true, copilotName: 'KIM FO', logDate: '2026-11-20' }))
+  ];
+  assert.deepEqual(L.crewNamesOf(list[2]), ['PARK CAP']);
+  const idx = L.crewIndex(list);
+  assert.equal(idx[0].name, 'KIM FO');
+  assert.equal(idx[0].count, 2); // 예정 비행은 빼고, 대소문자 무시
+  assert.equal(idx[0].first, '2026-11-01');
+  assert.equal(idx[0].last, '2026-11-05');
+  assert.deepEqual(L.crewIndex(list, 'park').map(x => x.name), ['PARK CAP']);
+});
+
+test('취소 감지는 그 달 전체 기준, 함께 탄 사람은 고친 이름 우선', () => {
+  const first = LS.importRoster(skdRows(), {}).add; // 12/01 ~ 12/31
+  const onlyFirstDay = skdRows().slice(0, 9);      // 12/01 비행만 남은 스케줄
+  const r = LS.importRoster(onlyFirstDay, { existing: first });
+  assert.deepEqual(r.cancelled.map(e => e.flightNumber), ['OZ8148', 'OZ8149', 'OZ8984', 'OZ8999']);
+  const e = Object.assign({}, first[0], { copilotName: 'LEE FO' });
+  assert.deepEqual(L.crewNamesOf(e), ['LEE FO']); // 스케줄 원래 부기장(김부기)은 빼고
+});

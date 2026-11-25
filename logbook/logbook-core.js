@@ -744,7 +744,7 @@
       nightManual: false, instrumentManual: false, isSimulator: false, remarks: '', source: 'manual',
       fn: 'PIC', instructing: false, examining: false, picName: '', ifr: 0, ifrManual: false, simInst: 0,
       approaches: 0, approachType: '', holding: false, fstdType: '',
-      planned: false, schedOut: null, schedIn: null, crew: '',
+      planned: false, schedOut: null, schedIn: null, crew: '', crewList: [], copilotName: '',
       createdAt: now, updatedAt: now, deleted: false
     }, fields || {});
   }
@@ -1186,6 +1186,50 @@
     return '﻿' + lines.join('\r\n') + '\r\n';
   }
 
+  /* ===================== 함께 탄 사람 ===================== */
+
+  const RANK_RE = /\s+(CAP|CPT|CAPT|F\/O|FO|SFO|SIC|PIC)(\([^)]*\))?$/i;
+
+  /** 한 비행에서 함께 탄 사람 이름들 (기장 이름, 함께 탄 조종사, 스케줄 승무원) */
+  function crewNamesOf(e) {
+    const names = [];
+    const key = n => n.toUpperCase().replace(/\s+/g, '');
+    const push = (n, fromCrewText) => {
+      n = String(n || '').trim();
+      // 스케줄 승무원 글자("김부기 F/O(F)")에서만 직급을 뗌
+      if (fromCrewText) n = n.replace(RANK_RE, '').replace(/\([^)]*\)$/, '').trim();
+      if (n && n.toUpperCase() !== 'SELF' && !names.some(x => key(x) === key(n))) names.push(n);
+    };
+    push(e.picName);
+    String(e.copilotName || '').split(/[,/·]/).forEach(n => push(n));
+    if (names.length) return names; // 기장·함께 탄 조종사 칸이 있으면 그것만 (당일 바뀐 사람을 반영)
+    if (Array.isArray(e.crewList) && e.crewList.length) e.crewList.forEach(c => push(c.name));
+    else String(e.crew || '').split(',').forEach(n => push(n, true));
+    return names;
+  }
+
+  /**
+   * 함께 탄 사람 목록: [{name, count, first, last, ids}] (많이 탄 순)
+   * query가 있으면 이름에 그 글자가 든 사람만 (대소문자·띄어쓰기 무시)
+   */
+  function crewIndex(entries, query) {
+    const q = String(query || '').toUpperCase().replace(/\s+/g, '');
+    const map = new Map();
+    for (const e of live(entries)) {
+      if (e.isSimulator) continue;
+      for (const n of crewNamesOf(e)) {
+        if (q && !n.toUpperCase().replace(/\s+/g, '').includes(q)) continue;
+        const k = n.toUpperCase().replace(/\s+/g, '');
+        const x = map.get(k) || { name: n, count: 0, first: e.logDate, last: e.logDate, ids: [] };
+        x.count++; x.ids.push(e.id);
+        if (e.logDate < x.first) x.first = e.logDate;
+        if (e.logDate > x.last) x.last = e.logDate;
+        map.set(k, x);
+      }
+    }
+    return [...map.values()].sort((a, b) => b.count - a.count || (a.last < b.last ? 1 : -1));
+  }
+
   /* ===================== 백업·동기화·CSV ===================== */
 
   const BACKUP_FORMAT = 'pilot-logbook-backup';
@@ -1238,6 +1282,6 @@
     referenceTime, resolveTimes, sunElevation, nightTime, newEntry, recalc, eventTime, live,
     totals, recency, makeBackup, readBackup, mergeEntries, toCSV, FIELD_LABEL,
     FUNCTIONS, fnOf, instructingOf, functionTime, careerAt, AIRCRAFT_TYPES, AIRCRAFT_ALIASES, aircraftInfo, distanceNm, sunTimes, isFaaNight,
-    derived, TOTAL_FIELDS, totalsFull, faaCurrency, FORMATS, buildLog, cellText, formatCSV
+    crewNamesOf, crewIndex, derived, TOTAL_FIELDS, totalsFull, faaCurrency, FORMATS, buildLog, cellText, formatCSV
   };
 });

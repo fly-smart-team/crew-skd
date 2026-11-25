@@ -32,7 +32,7 @@
     const db = opts.airports || L.airportDB();
     const offset = opts.schedTz === 'UTC' ? 0 : 9 * 60; // 스케줄 시각 기준 (기본: 한국 시간)
     const existing = (opts.existing || []).filter(e => !e.deleted);
-    const add = [], updated = [];
+    const add = [], updated = [], seen = new Set(), dates = [];
     let skipped = 0;
     for (const leg of D.legs) {
       if (!leg.sector || !/\//.test(leg.sector)) continue; // 휴무·대기 등 비행이 아닌 줄
@@ -49,8 +49,11 @@
       const fn = role.fn || (career && career.fn) || 'PIC';
       const pic = fn === 'PIC' ? null : leg.crew.find(c => c.emp !== D.emp && isPicSeat(c));
       const o = db.get(fromIata), d = db.get(toIata);
-      const crew = leg.crew.filter(c => c.emp !== D.emp).map(c => `${c.name} ${c.rank}${c.posn ? '(' + c.posn + ')' : ''}`).join(', ');
-
+      const others = leg.crew.filter(c => c.emp !== D.emp);
+      const crew = others.map(c => `${c.name} ${c.rank}${c.posn ? '(' + c.posn + ')' : ''}`).join(', ');
+      const crewList = others.map(c => ({ name: c.name, rank: c.rank, code: c.posn }));
+      const copilotName = others.filter(c => c !== pic && !isPicSeat(c)).map(c => c.name).join(', ');
+      seen.add(flightNumber + '|' + logDate); dates.push(logDate);
       const same = existing.find(e => e.flightNumber === flightNumber && e.logDate === logDate);
       if (same) {
         if (same.planned && (same.schedOut !== std || same.schedIn !== sta)) {
@@ -62,12 +65,12 @@
         planned: true, source: 'schedule', flightNumber, logDate,
         origin: o ? o.icao : fromIata, destination: d ? d.icao : toIata,
         schedOut: std, schedIn: sta,
-        fn, roleSure: role.sure, picName: pic ? pic.name : '', crew,
+        fn, roleSure: role.sure, picName: pic ? pic.name : '', copilotName, crew, crewList,
         aircraftType: (career && career.aircraftType) || opts.defaultType || '',
         duty: L.FUNCTIONS[fn].duty
       }));
     }
-    return { add, updated, skipped, month: D.month, me: D.me, emp: D.emp };
+    return { add, updated, skipped, month: D.month, me: D.me, emp: D.emp, seen, dates };
   }
 
   /* ===================== CWP Crew Roster (xlsx) ===================== */
@@ -162,7 +165,7 @@
     opts = opts || {};
     const db = opts.airports || L.airportDB();
     const existing = (opts.existing || []).filter(e => !e.deleted);
-    const add = [], updated = [], other = [];
+    const add = [], updated = [], other = [], seen = new Set(), dates = [];
     let skipped = 0;
     for (const leg of P.legs) {
       const mine = leg.crew.find(c => c.emp === P.emp) || leg.crew[0] || {};
@@ -179,7 +182,11 @@
       const fn = role.fn || (career && career.fn) || 'PIC';
       const pic = fn === 'PIC' ? null : leg.crew.find(c => c.emp !== P.emp && String(c.code).toUpperCase() === 'P1');
       const acMapped = (opts.aircraft || []).find(t => t.code === String(leg.ac).toUpperCase());
-      const crew = leg.crew.filter(c => c.emp !== P.emp).map(c => `${c.name} ${c.rank}${c.code ? '(' + c.code + ')' : ''}`).join(', ');
+      const others = leg.crew.filter(c => c.emp !== P.emp);
+      const crew = others.map(c => `${c.name} ${c.rank}${c.code ? '(' + c.code + ')' : ''}`).join(', ');
+      const crewList = others.map(c => ({ name: c.name, rank: c.rank, code: c.code }));
+      const copilotName = others.filter(c => c !== pic && String(c.code).toUpperCase() !== 'P1').map(c => c.name).join(', ');
+      seen.add(flightNumber + '|' + logDate); dates.push(logDate);
       const same = existing.find(e => e.flightNumber === flightNumber && e.logDate === logDate);
       if (same) {
         if (same.planned && (same.schedOut !== std || same.schedIn !== sta)) updated.push(Object.assign({}, same, { schedOut: std, schedIn: sta, updatedAt: opts.now || Date.now() }));
@@ -189,21 +196,43 @@
       add.push(L.newEntry({
         planned: true, source: 'schedule', flightNumber, logDate, origin: o.icao, destination: d.icao,
         schedOut: std, schedIn: sta, schedFlight: leg.flight, acCode: leg.ac,
-        fn, roleSure: role.sure, picName: pic ? pic.name : '', crew,
+        fn, roleSure: role.sure, picName: pic ? pic.name : '', copilotName, crew, crewList,
         instructing: /INS|IP|TRI|LTC/i.test(mine.special || ''), examining: /EXA|TRE|CHK|EXAM/i.test(mine.special || ''),
         aircraftType: acMapped ? acMapped.code : L.AIRCRAFT_ALIASES[String(leg.ac).toUpperCase()] || (career && career.aircraftType) || opts.defaultType || '',
         duty: L.FUNCTIONS[fn].duty
       }));
     }
-    return { format: 'cwp', add, updated, skipped, other, month: P.month, me: P.me, emp: P.emp };
+    return { format: 'cwp', add, updated, skipped, other, month: P.month, me: P.me, emp: P.emp, seen, dates };
   }
 
   /** 엑셀 행(sheet_to_json header:1) → 예정 비행. 양식 자동 판별 */
   function importRoster(rows, opts) {
     const fmt = detectFormat(rows);
-    if (fmt === 'cwp') return importCwp(parseCwp(rows), opts);
-    if (fmt === 'skd') return Object.assign(importSchedule(SKD.parseSkd(rows), opts), { format: 'skd', other: [] });
-    throw new Error('알 수 있는 스케줄 양식이 아닙니다 (MONTHLY SKD 또는 Crew Roster Report).');
+    let r;
+    if (fmt === 'cwp') r = importCwp(parseCwp(rows), opts);
+    else if (fmt === 'skd') r = Object.assign(importSchedule(SKD.parseSkd(rows), opts), { format: 'skd', other: [] });
+    else throw new Error('알 수 있는 스케줄 양식이 아닙니다 (MONTHLY SKD 또는 Crew Roster Report).');
+    r.cancelled = findCancelled(opts && opts.existing, r);
+    return r;
+  }
+
+  /**
+   * 새 스케줄에서 빠진 예정 비행 (취소·변경된 것으로 보임).
+   * 이 파일이 다루는 기간(그 달 전체, 파일이 다음 달까지 걸치면 거기까지) 안에 있고, 아직 기록하지 않은 스케줄 예정 비행만.
+   * 앱에서 직접 만든 예정 비행(source가 schedule이 아닌 것)은 건드리지 않음.
+   */
+  function findCancelled(existing, r) {
+    if (!r.dates || !r.dates.length) return [];
+    let from = r.dates.reduce((a, b) => (a < b ? a : b)), to = r.dates.reduce((a, b) => (a > b ? a : b));
+    // 월간 스케줄이면 그 달 전체를 이 파일이 다루는 기간으로 봄 (예: 11/26 비행이 빠졌으면 취소)
+    if (/^\d{6}$/.test(r.month || '')) {
+      const y = +r.month.slice(0, 4), m = +r.month.slice(4);
+      const ms = `${y}-${String(m).padStart(2, '0')}-01`, me = `${y}-${String(m).padStart(2, '0')}-${new Date(Date.UTC(y, m, 0)).getUTCDate()}`;
+      if (ms < from) from = ms;
+      if (me > to) to = me;
+    }
+    return (existing || []).filter(e => e.planned && !e.deleted && e.source === 'schedule' &&
+      e.logDate >= from && e.logDate <= to && !r.seen.has(e.flightNumber + '|' + e.logDate));
   }
 
   /** 스캔한 OOOI와 맞는 예정 비행 찾기: 편명이 같고 OUT이 STD 앞뒤 18시간 안 */
@@ -215,5 +244,5 @@
       (out != null ? cands.filter(e => Math.abs(e.schedOut - out) < 2 * 3600e3).sort((a, b) => Math.abs(a.schedOut - out) - Math.abs(b.schedOut - out))[0] : null) || null;
   }
 
-  return { roleFrom, roleFromCode, importSchedule, matchPlanned, detectFormat, parseCwp, importCwp, importRoster, localToUtc };
+  return { roleFrom, roleFromCode, importSchedule, matchPlanned, detectFormat, parseCwp, importCwp, importRoster, findCancelled, localToUtc };
 });
