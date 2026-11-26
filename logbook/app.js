@@ -6,7 +6,7 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.26-1'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.26-2'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
@@ -242,21 +242,29 @@
         <h3 style="font-size:15px;margin:12px 0 6px">구글 드라이브 (개인 계정) — <span id="gStatus" class="help"></span></h3>
         <p class="help" style="margin:0 0 6px">내 드라이브의 <span class="mono">${esc(DRIVE.FILE_NAME)}</span> 파일 하나만 읽고 씁니다. 회사(워크스페이스) 계정 대신 개인 계정으로 로그인하세요.</p>
         <div class="actions" style="margin:6px 0 14px"><button class="btn pri" id="setSync">${DRIVE.signedIn() ? '지금 동기화' : '구글 드라이브 연결'}</button></div>
-        <h3 style="font-size:15px;margin:12px 0 6px">iCloud (Apple 계정) — <span id="ckStatus" class="help"></span></h3>
+        <h3 style="font-size:15px;margin:12px 0 6px">iCloud Drive 파일 (무료) — <span id="idStatus" class="help"></span></h3>
+        <p class="help" style="margin:0 0 6px">회사 iPad처럼 구글을 쓰지 않는 기기용. 파일 앱의 iCloud Drive에 <span class="mono">${esc(IDRIVE_FILE)}</span> 하나를 두고 맞춥니다.
+          <b>①</b>로 그 파일을 골라 합치고, <b>②</b>로 공유 → "파일에 저장" → 같은 위치를 골라 <b>대치(덮어쓰기)</b>하세요. 처음에는 ②만 하면 됩니다.</p>
+        <div class="actions" style="margin:6px 0 14px">
+          <button class="btn" id="idLoad">① iCloud Drive에서 불러와 합치기</button>
+          <button class="btn pri" id="idSave">② iCloud Drive에 저장</button>
+        </div>
+        <input type="file" id="idFile" accept="application/json,.json" hidden>
+        <details style="margin:10px 0"${ICLOUD.configured() ? ' open' : ''}><summary class="help" style="cursor:pointer">고급: iCloud 자동 동기화 (Apple 개발자 계정 필요) — <span id="ckStatus"></span></summary>
         ${ICLOUD.configured() ? `
           <p class="help" style="margin:0 0 6px">내 iCloud의 비공개 영역에만 저장됩니다. 한 번 로그인하면 유지됩니다.</p>
           <div id="ck-sign-in" style="min-height:44px;margin:6px 0"></div><div id="ck-sign-out" style="margin:6px 0"></div>
           ${ICLOUD.config().source === 'device' ? '<button class="btn sm" id="ckReset">이 기기의 iCloud 설정 지우기</button>' : ''}` : `
-          <p class="help" style="margin:0 0 6px">iCloud 동기화를 켜려면 Apple 개발자 계정으로 만든 <b>CloudKit 컨테이너 ID</b>와 <b>API 토큰</b>이 필요합니다 (저장소 docs/icloud-setup.md). 받은 값을 넣으세요.</p>
+          <p class="help" style="margin:0 0 6px">자동 동기화를 켜려면 Apple 개발자 계정(연 $99)으로 만든 <b>CloudKit 컨테이너 ID</b>와 <b>API 토큰</b>이 필요합니다 (저장소 docs/icloud-setup.md). 받은 값을 넣으세요.</p>
           <div class="form">
             ${field('ckContainer', '컨테이너 ID', '', 'placeholder="iCloud.com.example.pilotlogbook" autocapitalize="off" spellcheck="false"')}
             ${field('ckToken', 'API 토큰', '', 'autocapitalize="off" spellcheck="false" autocomplete="off"')}
             <div class="field"><label for="ckEnv">환경</label>${selectHtml('ckEnv', [['production', 'production (실사용)'], ['development', 'development (시험)']], 'production')}</div>
           </div>
           <div class="actions" style="margin:6px 0"><button class="btn" id="ckSave">iCloud 설정 저장</button></div>`}
+        </details>
         <h3 style="font-size:15px;margin:16px 0 6px">파일 백업</h3>
         <div class="actions">
-          <button class="btn" id="exportShare">iCloud·파일 앱에 백업</button>
           <button class="btn" id="exportJson">JSON 백업 받기</button>
           <button class="btn" id="importJson">백업에서 불러오기</button>
         </div>
@@ -378,7 +386,9 @@
     });
     if ($('ckReset')) $('ckReset').addEventListener('click', () => { if (confirm('이 기기의 iCloud 설정을 지울까요? (iCloud에 저장된 기록은 그대로)')) { ICLOUD.saveDeviceConfig(null); renderSettings(); } });
     $('exportJson').addEventListener('click', () => downloadFile(backupText(), `logbook-backup-${todayIn(S.settings.tz)}.json`, 'application/json'));
-    $('exportShare').addEventListener('click', shareBackup);
+    $('idLoad').addEventListener('click', () => $('idFile').click());
+    $('idSave').addEventListener('click', saveToIcloudDrive);
+    $('idFile').addEventListener('change', loadFromIcloudDrive);
     $('importJson').addEventListener('click', () => $('importFile').click());
   }
 
@@ -1147,6 +1157,46 @@
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
 
+  /* ---------- iCloud Drive 파일 (무료, 수동) ---------- */
+
+  const IDRIVE_FILE = 'pilot-logbook.json';
+  const idriveChanges = () => (S.sync.idriveSavedAt ? S.entries.filter(e => (e.updatedAt || 0) > S.sync.idriveSavedAt).length +
+    ((S.settings.updatedAt || 0) > S.sync.idriveSavedAt ? 1 : 0) : null);
+
+  /** ① iCloud Drive의 로그북 파일을 골라 이 기기 기록과 합침 */
+  async function loadFromIcloudDrive(ev) {
+    const f = ev.target.files && ev.target.files[0];
+    ev.target.value = '';
+    if (!f) return;
+    try {
+      const m = await applyRemote(L.readBackup(await f.text()));
+      S.sync = Object.assign({}, S.sync, { idriveLoadedAt: Date.now() });
+      await DB.set('sync', S.sync);
+      render(true);
+      toast(`iCloud Drive 파일과 합쳤습니다 (추가 ${m.added}건, 갱신 ${m.updated}건). 이제 ② iCloud Drive에 저장을 눌러 파일을 덮어쓰세요.`, 7000);
+      const b = $('idSave'); if (b) { b.scrollIntoView({ block: 'center' }); b.focus(); }
+    } catch (err) {
+      toast('불러오기 실패: ' + err.message, 6000);
+    }
+  }
+
+  /** ② 합친 결과를 같은 이름의 파일로 공유 → "파일에 저장" → iCloud Drive에서 대치 */
+  async function saveToIcloudDrive() {
+    const text = backupText();
+    const file = new File([text], IDRIVE_FILE, { type: 'application/json' });
+    let shared = false;
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: '조종사 로그북' }); shared = true; }
+      catch (e) { if (e && e.name === 'AbortError') return; }
+    }
+    if (!shared) downloadFile(text, IDRIVE_FILE, 'application/json');
+    S.sync = Object.assign({}, S.sync, { idriveSavedAt: Date.now() });
+    await DB.set('sync', S.sync);
+    renderSync();
+    if (S.view === 'set') refreshSyncStatus();
+    toast(shared ? '"파일에 저장" → iCloud Drive에서 같은 파일을 대치하면 끝입니다.' : '파일을 내려받았습니다. 파일 앱에서 iCloud Drive의 같은 파일에 덮어쓰세요.', 6000);
+  }
+
   async function shareBackup() {
     const name = `logbook-backup-${todayIn(S.settings.tz)}.json`;
     const file = new File([backupText()], name, { type: 'application/json' });
@@ -1212,7 +1262,12 @@
     if (S.syncing) { text.textContent = '동기화 중…'; btn.hidden = true; return; }
     btn.hidden = false;
     if (!navigator.onLine) { dot.classList.add('warn'); text.textContent = pending ? '오프라인 · 이 기기에 저장됨' : '오프라인'; btn.hidden = true; }
-    else if (!on.length) {
+    else if (!on.length && S.sync.idriveSavedAt != null) {
+      const n = idriveChanges();
+      dot.classList.add(n ? 'warn' : 'ok');
+      text.textContent = n ? `iCloud 파일에 저장 필요 (${n}건)` : 'iCloud 파일과 맞춤';
+      btn.textContent = 'iCloud 파일 맞추기';
+    } else if (!on.length) {
       const was = S.sync.fileId || S.sync.icloud;
       if (was) dot.classList.add('warn');
       text.textContent = was ? '동기화 연결 끊김' : '이 기기에만 저장됨';
@@ -1323,6 +1378,12 @@
     if (g) g.textContent = DRIVE.signedIn() ? '연결됨' : (S.sync.fileId ? '연결 끊김 (1시간마다 다시 연결 필요)' : '연결 안 됨');
     if (gb) gb.textContent = DRIVE.signedIn() ? '지금 동기화' : '구글 드라이브 연결';
     if (c) c.textContent = !ICLOUD.configured() ? '설정 필요' : S.icloudError ? '오류: ' + S.icloudError : ICLOUD.signedIn() ? '연결됨 (로그인 유지)' : '아래 Apple 버튼으로 로그인하세요';
+    const id = $('idStatus');
+    if (id) {
+      const n = idriveChanges();
+      id.textContent = S.sync.idriveSavedAt == null ? '아직 저장 안 함' :
+        `마지막 저장 ${new Date(S.sync.idriveSavedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` + (n ? ` · 그 뒤 바뀐 기록 ${n}건` : ' · 최신');
+    }
     const ls = $('lastSyncText');
     if (ls) ls.textContent = S.sync.lastSync ? new Date(S.sync.lastSync).toLocaleString('ko-KR') : '아직 안 함';
   }
