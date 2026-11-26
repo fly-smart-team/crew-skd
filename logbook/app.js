@@ -1,12 +1,12 @@
 /* 조종사 전자 로그북 — 화면 */
 (function () {
   'use strict';
-  const L = window.LOGBOOK, OCR = window.LOGBOOK_OCR, DB = window.LOGBOOK_STORE, DRIVE = window.LOGBOOK_DRIVE, LS = window.LOGBOOK_SKD;
+  const L = window.LOGBOOK, OCR = window.LOGBOOK_OCR, DB = window.LOGBOOK_STORE, DRIVE = window.LOGBOOK_DRIVE, LS = window.LOGBOOK_SKD, ICLOUD = window.LOGBOOK_ICLOUD;
   const $ = id => document.getElementById(id);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.25-10'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.26-1'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
@@ -236,11 +236,26 @@
         <p class="help">기준일 다음 날부터의 앱 기록이 더해집니다. 출력할 때 첫 페이지의 "이전 페이지까지"에 들어갑니다.</p>
       </div>
 
-      <h2>저장 · 백업</h2>
+      <h2 id="syncSec">동기화 · 백업</h2>
       <div class="sec">
-        <p class="help" style="margin-top:0">기록은 항상 <b>이 기기에 먼저</b> 저장됩니다. 인터넷이 되면 <b>구글 드라이브</b>의 <span class="mono">${esc(DRIVE.FILE_NAME)}</span> 파일과 자동으로 합쳐집니다. 마지막 동기화: ${esc(lastSync)}</p>
+        <p class="help" style="margin-top:0">기록은 항상 <b>이 기기에 먼저</b> 저장되고, 인터넷이 되면 <b>연결된 곳 모두</b>와 자동으로 합쳐집니다. 기기마다 원하는 곳만 연결하세요 (예: 개인 폰은 구글+iCloud, 회사 iPad는 iCloud만). 마지막 동기화: <span id="lastSyncText">${esc(lastSync)}</span></p>
+        <h3 style="font-size:15px;margin:12px 0 6px">구글 드라이브 (개인 계정) — <span id="gStatus" class="help"></span></h3>
+        <p class="help" style="margin:0 0 6px">내 드라이브의 <span class="mono">${esc(DRIVE.FILE_NAME)}</span> 파일 하나만 읽고 씁니다. 회사(워크스페이스) 계정 대신 개인 계정으로 로그인하세요.</p>
+        <div class="actions" style="margin:6px 0 14px"><button class="btn pri" id="setSync">${DRIVE.signedIn() ? '지금 동기화' : '구글 드라이브 연결'}</button></div>
+        <h3 style="font-size:15px;margin:12px 0 6px">iCloud (Apple 계정) — <span id="ckStatus" class="help"></span></h3>
+        ${ICLOUD.configured() ? `
+          <p class="help" style="margin:0 0 6px">내 iCloud의 비공개 영역에만 저장됩니다. 한 번 로그인하면 유지됩니다.</p>
+          <div id="ck-sign-in" style="min-height:44px;margin:6px 0"></div><div id="ck-sign-out" style="margin:6px 0"></div>
+          ${ICLOUD.config().source === 'device' ? '<button class="btn sm" id="ckReset">이 기기의 iCloud 설정 지우기</button>' : ''}` : `
+          <p class="help" style="margin:0 0 6px">iCloud 동기화를 켜려면 Apple 개발자 계정으로 만든 <b>CloudKit 컨테이너 ID</b>와 <b>API 토큰</b>이 필요합니다 (저장소 docs/icloud-setup.md). 받은 값을 넣으세요.</p>
+          <div class="form">
+            ${field('ckContainer', '컨테이너 ID', '', 'placeholder="iCloud.com.example.pilotlogbook" autocapitalize="off" spellcheck="false"')}
+            ${field('ckToken', 'API 토큰', '', 'autocapitalize="off" spellcheck="false" autocomplete="off"')}
+            <div class="field"><label for="ckEnv">환경</label>${selectHtml('ckEnv', [['production', 'production (실사용)'], ['development', 'development (시험)']], 'production')}</div>
+          </div>
+          <div class="actions" style="margin:6px 0"><button class="btn" id="ckSave">iCloud 설정 저장</button></div>`}
+        <h3 style="font-size:15px;margin:16px 0 6px">파일 백업</h3>
         <div class="actions">
-          <button class="btn pri" id="setSync">${DRIVE.signedIn() ? '지금 동기화' : '구글 드라이브 연결'}</button>
           <button class="btn" id="exportShare">iCloud·파일 앱에 백업</button>
           <button class="btn" id="exportJson">JSON 백업 받기</button>
           <button class="btn" id="importJson">백업에서 불러오기</button>
@@ -351,7 +366,17 @@
       renderSettings();
     }));
     // 백업
-    $('setSync').addEventListener('click', () => sync(true));
+    $('setSync').addEventListener('click', () => sync(true, true));
+    refreshSyncStatus();
+    if (ICLOUD.configured()) startICloud(); // 로그인 안 돼 있으면 #ck-sign-in 에 Apple 로그인 버튼이 그려짐
+    if ($('ckSave')) $('ckSave').addEventListener('click', () => {
+      const c = { containerIdentifier: $('ckContainer').value.trim(), apiToken: $('ckToken').value.trim(), environment: $('ckEnv').value };
+      if (!/^iCloud\./.test(c.containerIdentifier) || !c.apiToken) return toast('컨테이너 ID(iCloud.로 시작)와 API 토큰을 넣어 주세요.');
+      ICLOUD.saveDeviceConfig(c);
+      toast('iCloud 설정을 저장했습니다. Apple 버튼으로 로그인하세요.');
+      renderSettings();
+    });
+    if ($('ckReset')) $('ckReset').addEventListener('click', () => { if (confirm('이 기기의 iCloud 설정을 지울까요? (iCloud에 저장된 기록은 그대로)')) { ICLOUD.saveDeviceConfig(null); renderSettings(); } });
     $('exportJson').addEventListener('click', () => downloadFile(backupText(), `logbook-backup-${todayIn(S.settings.tz)}.json`, 'application/json'));
     $('exportShare').addEventListener('click', shareBackup);
     $('importJson').addEventListener('click', () => $('importFile').click());
@@ -1173,21 +1198,29 @@
 
   /* ===================== 구글 드라이브 동기화 ===================== */
 
+  const linked = () => [DRIVE.signedIn() && 'google', ICLOUD.signedIn() && 'icloud'].filter(Boolean);
+  const anyLinked = () => linked().length > 0;
+  const TARGET_NAME = { google: '구글', icloud: 'iCloud' };
+  /** "구글과" / "iCloud와" / "구글·iCloud와" — 마지막 이름에 맞는 조사 */
+  const withJosa = on => on.map(t => TARGET_NAME[t]).join('·') + (on[on.length - 1] === 'google' ? '과' : '와');
+
   function renderSync() {
     const dot = $('syncDot'), text = $('syncText'), btn = $('syncBtn');
     const pending = !S.sync.lastSync || S.entries.some(e => (e.updatedAt || 0) > S.sync.lastSync) || (S.settings.updatedAt || 0) > S.sync.lastSync;
+    const on = linked(), names = on.map(t => TARGET_NAME[t]).join('·');
     dot.className = 'dot';
     if (S.syncing) { text.textContent = '동기화 중…'; btn.hidden = true; return; }
     btn.hidden = false;
     if (!navigator.onLine) { dot.classList.add('warn'); text.textContent = pending ? '오프라인 · 이 기기에 저장됨' : '오프라인'; btn.hidden = true; }
-    else if (!DRIVE.signedIn()) {
-      if (S.sync.fileId) dot.classList.add('warn');
-      text.textContent = S.sync.fileId ? '드라이브 연결 끊김' : '이 기기에만 저장됨';
-      btn.textContent = S.sync.fileId ? '다시 연결' : '구글 드라이브 연결';
-    } else if (S.sync.error) { dot.classList.add('bad'); text.textContent = '동기화 실패'; btn.textContent = '다시 시도'; }
+    else if (!on.length) {
+      const was = S.sync.fileId || S.sync.icloud;
+      if (was) dot.classList.add('warn');
+      text.textContent = was ? '동기화 연결 끊김' : '이 기기에만 저장됨';
+      btn.textContent = S.sync.fileId && !ICLOUD.configured() ? '다시 연결' : '동기화 연결';
+    } else if (S.sync.error) { dot.classList.add('bad'); text.textContent = '동기화 일부 실패'; btn.textContent = '다시 시도'; }
     else {
       dot.classList.add(pending ? 'warn' : 'ok');
-      text.textContent = pending ? '동기화 대기' : '드라이브와 맞춤 ' + (S.sync.lastSync ? new Date(S.sync.lastSync).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '');
+      text.textContent = pending ? `${names} 동기화 대기` : `${withJosa(on)} 맞춤 ` + (S.sync.lastSync ? new Date(S.sync.lastSync).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '');
       btn.textContent = '지금 동기화';
     }
   }
@@ -1196,41 +1229,103 @@
   function markDirty() {
     renderSync();
     clearTimeout(syncTimer);
-    if (DRIVE.signedIn() && navigator.onLine) syncTimer = setTimeout(() => sync(false), 1500);
+    if (anyLinked() && navigator.onLine) syncTimer = setTimeout(() => sync(false), 1500);
   }
 
-  async function sync(interactive) {
+  /**
+   * 연결된 모든 곳(구글 드라이브, iCloud)에서 받아 이 기기 기록과 합친 뒤, 합친 결과를 모두에 올림.
+   * 폰이 구글·iCloud 둘 다, 회사 iPad가 iCloud만 연결돼 있어도 결국 모두 같아짐.
+   * connectGoogle: 구글 로그인 창을 띄움 (버튼을 눌렀을 때만)
+   */
+  async function sync(interactive, connectGoogle) {
     if (S.syncing) return;
     let changed = false;
     if (!navigator.onLine) { renderSync(); if (interactive) toast('오프라인입니다. 기록은 이 기기에 저장되어 있고, 인터넷이 되면 동기화합니다.'); return; }
+    const errors = [];
     try {
-      if (interactive && !DRIVE.signedIn()) {
+      if (connectGoogle && !DRIVE.signedIn()) {
         await DRIVE.signIn();
         try { localStorage.setItem('logbook.driveConnected', '1'); } catch (e) { /* 무시 */ }
       }
-      if (!DRIVE.signedIn()) { renderSync(); return; }
+      const on = linked();
+      if (!on.length) { renderSync(); return; }
       S.syncing = true; renderSync();
-      const id = await DRIVE.findFile(S.sync.fileId);
-      if (id) { const m = await applyRemote(L.readBackup(await DRIVE.download(id))); if (m.changed) changed = true; }
-      const newId = await DRIVE.upload(id, backupText());
-      S.sync = { fileId: newId, lastSync: Date.now(), error: '' };
+      const merge = async text => { const m = await applyRemote(L.readBackup(text)); if (m.changed) changed = true; };
+
+      // 1) 받아서 합치기
+      let gId = null, ckTag = null;
+      const ok = {};
+      if (on.includes('google')) {
+        try { gId = await DRIVE.findFile(S.sync.fileId); if (gId) await merge(await DRIVE.download(gId)); ok.google = true; }
+        catch (e) { errors.push('구글: ' + e.message); }
+      }
+      if (on.includes('icloud')) {
+        try { const d = await ICLOUD.download(); if (d) { await merge(d.text); ckTag = d.tag; } ok.icloud = true; }
+        catch (e) { errors.push('iCloud: ' + e.message); }
+      }
+      // 2) 합친 결과 올리기
+      if (ok.google) {
+        try { S.sync.fileId = await DRIVE.upload(gId, backupText()); } catch (e) { errors.push('구글: ' + e.message); }
+      }
+      if (ok.icloud) {
+        try {
+          try { await ICLOUD.upload(backupText(), ckTag); }
+          catch (e) {
+            if (!/CONFLICT|OPLOCK/i.test(e.code || e.message)) throw e;
+            const d = await ICLOUD.download(); // 그 사이 다른 기기가 올렸음 → 다시 합치고 올림
+            if (d) await merge(d.text);
+            await ICLOUD.upload(backupText(), d && d.tag);
+          }
+          S.sync.icloud = true;
+        } catch (e) { errors.push('iCloud: ' + e.message); }
+      }
+      S.sync = Object.assign({}, S.sync, { lastSync: errors.length ? S.sync.lastSync : Date.now(), error: errors.join(' / ') });
       await DB.set('sync', S.sync);
-      if (interactive) toast('구글 드라이브와 맞췄습니다.');
+      if (errors.length) toast('동기화 실패 — ' + errors.join(' / '), 8000);
+      else if (interactive) toast(withJosa(on) + ' 맞췄습니다.');
     } catch (err) {
       S.sync.error = err.message;
       if (interactive || !err.needLogin) toast('동기화 실패: ' + err.message, 7000);
     } finally {
       S.syncing = false;
-      // 드라이브에서 받은 변경이 있을 때만 화면을 다시 그림 (입력 중인 칸이 끊기지 않게)
-      if (changed) render(); else renderSync();
+      // 받은 변경이 있을 때만 화면을 다시 그림 (입력 중인 칸이 끊기지 않게)
+      if (changed) render(); else { renderSync(); if (S.view === 'set') refreshSyncStatus(); }
     }
   }
 
-  $('syncBtn').addEventListener('click', () => sync(true));
-  window.addEventListener('online', () => { renderSync(); if (DRIVE.signedIn()) sync(false); });
+  $('syncBtn').addEventListener('click', () => {
+    if (anyLinked()) return sync(true);
+    if (S.sync.fileId && !ICLOUD.configured()) return sync(true, true); // 구글만 쓰던 경우: 바로 다시 연결
+    show('set');
+    setTimeout(() => { const el = $('syncSec'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
+  });
+  window.addEventListener('online', () => { renderSync(); if (anyLinked()) sync(false); else startICloud(); });
   window.addEventListener('offline', renderSync);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && DRIVE.signedIn()) sync(false); });
-  setInterval(() => { if (DRIVE.signedIn() && navigator.onLine && document.visibilityState === 'visible') sync(false); }, 10 * 60000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && anyLinked()) sync(false); });
+  setInterval(() => { if (anyLinked() && navigator.onLine && document.visibilityState === 'visible') sync(false); }, 10 * 60000);
+
+  /* ---------- iCloud ---------- */
+
+  function startICloud() {
+    if (!ICLOUD.configured() || !navigator.onLine) return Promise.resolve(null);
+    return ICLOUD.setUp().catch(err => { S.icloudError = err.message; if (S.view === 'set') refreshSyncStatus(); return null; });
+  }
+  ICLOUD.onChange(signed => {
+    S.icloudError = '';
+    renderSync();
+    if (S.view === 'set') refreshSyncStatus();
+    if (signed) sync(false);
+  });
+
+  /** 설정 화면의 동기화 상태 글자만 바꿈 (입력 중인 칸이 끊기지 않게 전체를 다시 그리지 않음) */
+  function refreshSyncStatus() {
+    const g = $('gStatus'), c = $('ckStatus'), gb = $('setSync');
+    if (g) g.textContent = DRIVE.signedIn() ? '연결됨' : (S.sync.fileId ? '연결 끊김 (1시간마다 다시 연결 필요)' : '연결 안 됨');
+    if (gb) gb.textContent = DRIVE.signedIn() ? '지금 동기화' : '구글 드라이브 연결';
+    if (c) c.textContent = !ICLOUD.configured() ? '설정 필요' : S.icloudError ? '오류: ' + S.icloudError : ICLOUD.signedIn() ? '연결됨 (로그인 유지)' : '아래 Apple 버튼으로 로그인하세요';
+    const ls = $('lastSyncText');
+    if (ls) ls.textContent = S.sync.lastSync ? new Date(S.sync.lastSync).toLocaleString('ko-KR') : '아직 안 함';
+  }
 
   /* ===================== 시작 ===================== */
 
@@ -1273,6 +1368,7 @@
     render();
     DB.persist();
     if (DRIVE.signedIn() && navigator.onLine) sync(false);
+    startICloud(); // 로그인돼 있으면 onChange → 자동 동기화
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       navigator.serviceWorker.register('sw.js').catch(() => {});
     }
