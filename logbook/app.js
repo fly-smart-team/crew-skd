@@ -6,11 +6,11 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.26-2'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.27-1'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
-    carry: { asOf: '' }, airports: [], aircraft: [], careers: [], profile: {}, print: {}, updatedAt: 0
+    carry: { asOf: '' }, airports: [], aircraft: [], careers: [], profile: {}, print: {}, savedFilters: [], updatedAt: 0
   };
   const ROLES = [['pf', 'PF (이륙·착륙)', true, true], ['pm', 'PM', false, false], ['to', '이륙만', true, false], ['ld', '착륙만', false, true]];
 
@@ -46,63 +46,198 @@
 
   /* ===================== 로그북 목록 ===================== */
 
+  /* ---------- 목록 보기 상태 (탭·정렬·필터) — 이 기기에 기억 ---------- */
+  const LV_KEY = 'logbook.view';
+  const LV = (() => {
+    let v = null;
+    try { v = JSON.parse(localStorage.getItem(LV_KEY) || 'null'); } catch (e) { /* 무시 */ }
+    return Object.assign({ tab: null, sort: { up: 'asc', rec: 'desc', all: 'desc' }, filter: Object.assign({}, L.FILTER_DEFAULT), open: false, showStale: false }, v || {});
+  })();
+  const saveLV = () => { try { localStorage.setItem(LV_KEY, JSON.stringify(LV)); } catch (e) { /* 무시 */ } };
+  const TABS = [['up', '오늘·예정'], ['rec', '기록'], ['all', '전체']];
+  const PERIODS = [['', '전체 기간'], ['thisMonth', '이번 달'], ['lastMonth', '지난달'], ['90d', '최근 90일'], ['thisYear', '올해'], ['custom', '직접 지정']];
+  const FN_FILTER = [['', '모든 역할'], ['PIC', '기장 (PIC)'], ['SIC', '부기장 (SIC)'], ['PICUS', 'PICUS'], ['RELIEF', '순항 교대'], ['DUAL', '교육 받음'], ['instr', '교관 비행 (IP)'], ['exam', '심사 비행 (평가관)']];
+  const filterCount = f => Object.keys(L.FILTER_DEFAULT).filter(k => !['from', 'to'].includes(k) && f[k] && f[k] !== L.FILTER_DEFAULT[k]).length;
+
   function renderLog() {
-    const q = S.search.trim().toUpperCase();
-    let list = live().sort((a, b) => (a.logDate === b.logDate ? L.eventTime(b) - L.eventTime(a) : a.logDate < b.logDate ? 1 : -1));
-    if (q) {
-      const qn = q.replace(/\s+/g, '');
-      list = list.filter(e => [e.flightNumber, e.registration, e.aircraftType, airports.display(e.origin), airports.display(e.destination), e.origin, e.destination, e.logDate, e.remarks]
-        .some(x => String(x || '').toUpperCase().includes(q)) || L.crewNamesOf(e).some(n => n.toUpperCase().replace(/\s+/g, '').includes(qn)));
-    }
+    if (!LV.tab) LV.tab = S.entries.some(e => e.planned && !e.deleted) ? 'up' : 'rec';
+    renderLogTools();
+    renderBoard();
+  }
+
+  function renderLogTools() {
+    const f = LV.filter, n = filterCount(f), sort = LV.sort[LV.tab] || 'desc';
+    const types = [...new Set(S.entries.filter(e => !e.deleted && e.aircraftType).map(e => e.aircraftType.toUpperCase()))].sort();
+    const saved = S.settings.savedFilters || [];
+    const opt = (list, v) => list.map(([k, l]) => `<option value="${esc(k)}"${k === v ? ' selected' : ''}>${esc(l)}</option>`).join('');
+    $('logTools').innerHTML = `
+      <div class="lv-bar">
+        <div class="lv-tabs" role="tablist">${TABS.map(([k, l]) => `<button type="button" role="tab" data-tab="${k}" aria-pressed="${LV.tab === k}">${l}</button>`).join('')}</div>
+        <button type="button" class="btn sm" id="sortBtn" title="정렬 바꾸기">${sort === 'asc' ? '↑ 오름차순' : '↓ 내림차순'}</button>
+        <button type="button" class="btn sm${n ? ' pri' : ''}" id="filterBtn" aria-expanded="${LV.open}">필터${n ? ' ' + n : ''}</button>
+      </div>
+      ${saved.length ? `<div class="chips">${saved.map(x => `<span class="chip"><button type="button" class="chip-go" data-sf="${esc(x.id)}">${esc(x.name)}</button><button type="button" class="chip-x" data-sfdel="${esc(x.id)}" aria-label="${esc(x.name)} 지우기">×</button></span>`).join('')}</div>` : ''}
+      <div class="sec" id="filterPanel"${LV.open ? '' : ' hidden'}>
+        <div class="form">
+          <div class="field"><label for="fPeriod">기간</label><select id="fPeriod">${opt(PERIODS, f.period)}</select></div>
+          <div class="field" id="fCustom"${f.period === 'custom' ? '' : ' hidden'}><label>시작 ~ 종료</label><div style="display:flex;gap:6px"><input type="date" id="fFrom" value="${esc(f.from)}"><input type="date" id="fTo" value="${esc(f.to)}"></div></div>
+          <div class="field"><label for="fKind">종류</label><select id="fKind">${opt([['', '비행 + 시뮬레이터'], ['flight', '비행만'], ['sim', '시뮬레이터만']], f.kind)}</select></div>
+          <div class="field"><label for="fFn">역할</label><select id="fFn">${opt(FN_FILTER, f.fn)}</select></div>
+          <div class="field"><label for="fType">기종</label><select id="fType">${opt([['', '모든 기종']].concat(types.map(t => [t, t])), f.type)}</select></div>
+          <div class="field"><label for="fApt">공항 (출발 또는 도착)</label><input id="fApt" value="${esc(f.apt)}" placeholder="ICN / RKSI" autocapitalize="characters" autocomplete="off"></div>
+          <div class="field"><label for="fReg">등록부호</label><input id="fReg" value="${esc(f.reg)}" placeholder="HL8399" autocapitalize="characters" autocomplete="off"></div>
+          <div class="field"><label>그 밖에</label>
+            <label style="display:inline-flex;gap:6px;align-items:center;margin-right:14px"><input type="checkbox" id="fNight" ${f.night ? 'checked' : ''} style="width:auto;min-height:0"> 야간 비행만</label>
+            <label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="fPhoto" ${f.photo ? 'checked' : ''} style="width:auto;min-height:0"> 사진 있는 것만</label></div>
+        </div>
+        <div class="actions" style="margin:10px 0 0">
+          <button type="button" class="btn" id="fReset">초기화</button>
+          <button type="button" class="btn" id="fSave">이 필터 저장</button>
+        </div>
+        <p class="help">필터 저장: 지금 탭·정렬·필터를 이름 붙여 저장해 두고, 위의 버튼으로 다시 불러옵니다. 다른 기기와도 동기화됩니다.</p>
+      </div>`;
+
+    const T = $('logTools');
+    T.querySelectorAll('[data-tab]').forEach(b => b.addEventListener('click', () => { LV.tab = b.dataset.tab; saveLV(); renderLog(); }));
+    $('sortBtn').addEventListener('click', () => { LV.sort[LV.tab] = (LV.sort[LV.tab] || 'desc') === 'asc' ? 'desc' : 'asc'; saveLV(); renderLog(); });
+    $('filterBtn').addEventListener('click', () => { LV.open = !LV.open; saveLV(); $('filterPanel').hidden = !LV.open; $('filterBtn').setAttribute('aria-expanded', LV.open); });
+    const set = (k, v) => {
+      LV.filter[k] = v; saveLV(); renderBoard();
+      const c = filterCount(LV.filter), fb = $('filterBtn');
+      fb.textContent = '필터' + (c ? ' ' + c : ''); fb.classList.toggle('pri', c > 0);
+    };
+    $('fPeriod').addEventListener('change', ev => { $('fCustom').hidden = ev.target.value !== 'custom'; set('period', ev.target.value); });
+    $('fFrom').addEventListener('change', ev => set('from', ev.target.value));
+    $('fTo').addEventListener('change', ev => set('to', ev.target.value));
+    $('fKind').addEventListener('change', ev => set('kind', ev.target.value));
+    $('fFn').addEventListener('change', ev => set('fn', ev.target.value));
+    $('fType').addEventListener('change', ev => set('type', ev.target.value));
+    $('fApt').addEventListener('input', ev => set('apt', ev.target.value.trim()));
+    $('fReg').addEventListener('input', ev => set('reg', ev.target.value.trim()));
+    $('fNight').addEventListener('change', ev => set('night', ev.target.checked));
+    $('fPhoto').addEventListener('change', ev => set('photo', ev.target.checked));
+    $('fReset').addEventListener('click', resetFilter);
+    $('fSave').addEventListener('click', async () => {
+      const name = (prompt('저장할 이름 (예: 올해 기장 비행)', '') || '').trim();
+      if (!name) return;
+      const list = (S.settings.savedFilters || []).filter(x => x.name !== name);
+      list.push({ id: 'f' + Date.now().toString(36), name, tab: LV.tab, sort: LV.sort[LV.tab], filter: Object.assign({}, LV.filter) });
+      await saveSettings({ savedFilters: list });
+      toast(`"${name}" 필터를 저장했습니다.`);
+      renderLogTools();
+    });
+    T.querySelectorAll('[data-sf]').forEach(b => b.addEventListener('click', () => {
+      const x = (S.settings.savedFilters || []).find(y => y.id === b.dataset.sf);
+      if (!x) return;
+      LV.tab = x.tab || 'rec'; LV.sort[LV.tab] = x.sort || LV.sort[LV.tab];
+      LV.filter = Object.assign({}, L.FILTER_DEFAULT, x.filter);
+      saveLV(); renderLog();
+      toast(`"${x.name}" 필터를 불러왔습니다.`);
+    }));
+    T.querySelectorAll('[data-sfdel]').forEach(b => b.addEventListener('click', async () => {
+      const x = (S.settings.savedFilters || []).find(y => y.id === b.dataset.sfdel);
+      if (!x || !confirm(`저장한 필터 "${x.name}"를 지울까요?`)) return;
+      await saveSettings({ savedFilters: (S.settings.savedFilters || []).filter(y => y.id !== x.id) });
+      renderLogTools();
+    }));
+  }
+
+  function resetFilter() {
+    LV.filter = Object.assign({}, L.FILTER_DEFAULT);
+    S.search = ''; $('search').value = '';
+    saveLV(); renderLog();
+  }
+
+  /** 한 줄 */
+  function rowHtml(e, today) {
+    const title = e.isSimulator ? `SIM · ${esc(e.aircraftType)} ${esc(e.flightNumber)}`
+      : `${esc(e.flightNumber || '편명 없음')} <span style="font-weight:600">${esc(airports.display(e.origin))}→${esc(airports.display(e.destination))}</span>`;
+    const fnShort = { PIC: 'PIC', SIC: 'F/O', PICUS: 'PICUS', RELIEF: 'Relief', DUAL: 'Dual', OBS: 'OBS' }[L.fnOf(e)];
+    const sub = [e.aircraftType && !e.isSimulator ? e.aircraftType : '', e.registration, e.isSimulator ? e.fstdType : fnShort,
+      L.instructingOf(e) ? 'IP' : '', e.examining ? '평가' : '', e.isSimulator ? '' : L.crewNamesOf(e).slice(0, 2).join(', ')].filter(Boolean).map(esc).join(' · ');
+    const badges = e.planned ? [
+      '<span class="badge plan">예정</span>',
+      e.roleSure === false ? '<span class="badge warn">역할 확인</span>' : ''
+    ].join('') : [
+      e.takeoffs > 0 ? `<span class="badge">T/O${e.nightTakeoffs ? ' ☾' : ''}${e.takeoffs > 1 ? ' ×' + e.takeoffs : ''}</span>` : '',
+      e.landings > 0 ? `<span class="badge">L/D${e.nightLandings ? ' ☾' : ''}${e.landings > 1 ? ' ×' + e.landings : ''}</span>` : '',
+      e.hasPhoto ? '<span class="badge" title="스캔 사진 있음">📷</span>' : ''
+    ].join('');
+    const blk = e.planned
+      ? `<span class="blk"><span class="t">${e.schedOut != null ? L.zulu(e.schedOut) + 'Z' : ''}</span><small>STD</small></span>`
+      : `<span class="blk"><span class="t">${L.hmm(e.block)}</span>${e.night ? `<small>☾ ${L.hmm(e.night)}</small>` : ''}</span>`;
+    const isToday = e.logDate === today;
+    return `<li class="row${e.planned ? ' plan' : ''}${isToday ? ' today' : ''}" data-id="${esc(e.id)}" tabindex="0" role="button" aria-label="${esc(e.logDate)} ${esc(e.flightNumber)} ${e.planned ? '예정 비행 기록하기' : '열기'}">
+      <span class="d">${isToday ? '오늘' : esc(e.logDate.slice(5).replace('-', '/'))}</span>
+      <span><span class="ttl">${title}</span><br><span class="sub">${sub}</span></span>
+      <span class="badges">${badges}</span>
+      ${blk}</li>`;
+  }
+
+  function renderBoard() {
     const board = $('board');
-    const stale = S.entries.filter(e => e.planned && !e.deleted && e.schedOut != null && e.schedOut < Date.now() - 36 * 3600e3);
-    const staleHtml = stale.length && !q ? `<div class="banner"><span>기록하지 않은 <b>지난 예정 비행 ${stale.length}건</b>이 있습니다. 비행했으면 눌러서 시각을 넣고, 취소된 비행이면 정리하세요.</span><button class="btn sm" id="clearStale">지난 예정 정리</button></div>` : '';
+    const today = todayIn(S.settings.tz);
+    const v = L.logView(S.entries, { tab: LV.tab, sort: LV.sort[LV.tab] || 'desc', filter: LV.filter, query: S.search, today, display: c => airports.display(c) });
+    const q = S.search.trim();
+    const filtering = L.filterActive(LV.filter) || q;
+
+    // 검색어로 찾은 함께 탄 사람
     const people = q.length >= 2 ? L.crewIndex(S.entries, q).slice(0, 5) : [];
     const ymd = d => d.replace(/-/g, '/');
     const peopleHtml = people.length ? `<div class="banner" style="display:block"><b>함께 탄 사람</b><ul class="list-plain" style="margin:6px 0 0">${people.map(p =>
       `<li><span><b>${esc(p.name)}</b> — 함께 ${p.count}회</span><span class="help mono">${p.count > 1 ? ymd(p.first) + ' ~ ' : ''}${ymd(p.last)}</span></li>`).join('')}</ul></div>` : '';
-    if (!list.length) {
-      board.innerHTML = peopleHtml + `<p class="empty">${q ? '찾는 기록이 없습니다.' : '아직 기록이 없습니다.<br><b>📅 스케줄 가져오기</b>로 이번 달 비행을 미리 넣어 두거나,<br>비행 후 MCDU의 <b>AOC › OOOI STATUS</b> 화면을 <b>OOOI 화면 찍기</b>로 찍으세요.'}</p>`;
-      return;
+
+    // 필터 결과 요약
+    const t = v.totals;
+    const sumHtml = filtering ? `<div class="banner"><span><b>필터 적용 중</b> · 비행 ${t.flights}편 ${L.hmm(t.block)}${t.sims ? ` · 시뮬레이터 ${t.sims}` : ''}${t.planned ? ` · 예정 ${t.planned}편` : ''}</span><button class="btn sm" id="clearFilter">초기화</button></div>` : '';
+
+    // 오늘·예정 탭: 기록 안 한 지난 비행
+    let staleHtml = '';
+    if (LV.tab === 'up' && v.stale.length) {
+      staleHtml = `<div class="banner" style="display:block">
+        <button type="button" class="btn sm" id="toggleStale" aria-expanded="${LV.showStale}">${LV.showStale ? '▾' : '▸'} 아직 기록 안 한 지난 비행 ${v.stale.length}건</button>
+        <span class="help"> 비행했으면 눌러서 시각을 넣고, 취소된 비행이면 정리하세요.</span>
+        ${LV.showStale ? `<ul class="board" style="margin-top:8px">${v.stale.map(e => rowHtml(e, today)).join('')}</ul><div class="actions" style="margin:8px 0 0"><button class="btn sm" id="clearStale">지난 예정 정리</button></div>` : ''}
+      </div>`;
     }
-    const groups = new Map();
-    for (const e of list) {
-      const k = e.logDate.slice(0, 7) || '날짜 없음';
-      if (!groups.has(k)) groups.set(k, []);
-      groups.get(k).push(e);
-    }
-    let html = '';
-    for (const [m, items] of groups) {
-      const sum = items.filter(e => !e.isSimulator && !e.planned).reduce((s, e) => s + e.block, 0);
-      html += `<div class="month"><span>${esc(m.replace('-', '년 '))}월</span><span class="mono">${L.hmm(sum)}</span></div><ul class="board">`;
-      for (const e of items) {
-        const title = e.isSimulator ? `SIM · ${esc(e.aircraftType)} ${esc(e.flightNumber)}`
-          : `${esc(e.flightNumber || '편명 없음')} <span style="font-weight:600">${esc(airports.display(e.origin))}→${esc(airports.display(e.destination))}</span>`;
-        const fnShort = { PIC: 'PIC', SIC: 'F/O', PICUS: 'PICUS', RELIEF: 'Relief', DUAL: 'Dual', OBS: 'OBS' }[L.fnOf(e)];
-        const sub = [e.aircraftType && !e.isSimulator ? e.aircraftType : '', e.registration, e.isSimulator ? e.fstdType : fnShort,
-          L.instructingOf(e) ? 'IP' : '', e.examining ? '평가' : '', e.isSimulator ? '' : L.crewNamesOf(e).slice(0, 2).join(', ')].filter(Boolean).map(esc).join(' · ');
-        const badges = e.planned ? [
-          '<span class="badge plan">예정</span>',
-          e.roleSure === false ? '<span class="badge warn">역할 확인</span>' : ''
-        ].join('') : [
-          e.takeoffs > 0 ? `<span class="badge">T/O${e.nightTakeoffs ? ' ☾' : ''}${e.takeoffs > 1 ? ' ×' + e.takeoffs : ''}</span>` : '',
-          e.landings > 0 ? `<span class="badge">L/D${e.nightLandings ? ' ☾' : ''}${e.landings > 1 ? ' ×' + e.landings : ''}</span>` : '',
-          e.hasPhoto ? '<span class="badge" title="스캔 사진 있음">📷</span>' : ''
-        ].join('');
-        const blk = e.planned
-          ? `<span class="blk"><span class="t">${e.schedOut != null ? L.zulu(e.schedOut) + 'Z' : ''}</span><small>STD</small></span>`
-          : `<span class="blk"><span class="t">${L.hmm(e.block)}</span>${e.night ? `<small>☾ ${L.hmm(e.night)}</small>` : ''}</span>`;
-        html += `<li class="row${e.planned ? ' plan' : ''}" data-id="${esc(e.id)}" tabindex="0" role="button" aria-label="${esc(e.logDate)} ${esc(e.flightNumber)} ${e.planned ? '예정 비행 기록하기' : '열기'}">
-          <span class="d">${esc(e.logDate.slice(5).replace('-', '/'))}</span>
-          <span><span class="ttl">${title}</span><br><span class="sub">${sub}</span></span>
-          <span class="badges">${badges}</span>
-          ${blk}</li>`;
+
+    if (!v.items.length) {
+      const empty = filtering ? '조건에 맞는 기록이 없습니다.'
+        : LV.tab === 'up' ? '오늘과 앞으로 예정된 비행이 없습니다.<br><b>📅 스케줄 가져오기</b>로 비행을 미리 넣어 두거나, 비행 후 <b>OOOI 화면 찍기</b>를 하세요.'
+          : LV.tab === 'rec' ? '저장한 기록이 없습니다.<br>비행 후 MCDU의 <b>AOC › OOOI STATUS</b> 화면을 <b>OOOI 화면 찍기</b>로 찍으세요.'
+            : '아직 기록이 없습니다.';
+      board.innerHTML = peopleHtml + sumHtml + staleHtml + `<p class="empty">${empty}</p>`;
+    } else {
+      // 달별로 묶어 그대로 순서 유지. 전체 탭은 '오늘' 위치에 구분선
+      const months = [];
+      v.items.forEach((e, i) => {
+        const k = e.logDate.slice(0, 7) || '날짜 없음';
+        let g = months[months.length - 1];
+        if (!g || g.k !== k) { g = { k, parts: [[]] }; months.push(g); }
+        if (i === v.todayIndex && g.parts[g.parts.length - 1].length) g.parts.push([]);
+        if (i === v.todayIndex) g.todayAt = g.parts.length - 1;
+        g.parts[g.parts.length - 1].push(e);
+      });
+      let html = '';
+      for (const g of months) {
+        const items = g.parts.flat();
+        const done = items.filter(e => !e.isSimulator && !e.planned), plan = items.filter(e => e.planned);
+        const planMin = plan.reduce((a, e) => a + (e.schedOut != null && e.schedIn != null ? Math.round((e.schedIn - e.schedOut) / MIN) : 0), 0);
+        const right = [done.length ? L.hmm(done.reduce((a, e) => a + e.block, 0)) : '', plan.length ? `예정 ${plan.length}편 · ${L.hmm(planMin)}` : ''].filter(Boolean).join(' · ') || L.hmm(0);
+        html += `<div class="month"><span>${esc(g.k.replace('-', '년 '))}월</span><span class="mono">${right}</span></div>`;
+        g.parts.forEach((part, pi) => {
+          if (pi === g.todayAt) html += `<div class="today-line"><span>오늘 ${esc(today.slice(5).replace('-', '/'))}</span></div>`;
+          if (part.length) html += `<ul class="board">${part.map(e => rowHtml(e, today)).join('')}</ul>`;
+        });
       }
-      html += '</ul>';
+      board.innerHTML = peopleHtml + sumHtml + staleHtml + html;
     }
-    board.innerHTML = peopleHtml + staleHtml + html;
+
+    if ($('clearFilter')) $('clearFilter').addEventListener('click', resetFilter);
+    if ($('toggleStale')) $('toggleStale').addEventListener('click', () => { LV.showStale = !LV.showStale; saveLV(); renderBoard(); });
     const cs = $('clearStale');
     if (cs) cs.addEventListener('click', async () => {
+      const stale = v.stale;
       if (!confirm(`지난 예정 비행 ${stale.length}건을 지울까요?\n(실제로 비행한 것은 먼저 눌러서 기록해 두세요)`)) return;
       const now = Date.now(), gone = stale.map(e => Object.assign({}, e, { deleted: true, updatedAt: now }));
       await DB.putEntries(gone);
@@ -119,7 +254,7 @@
     const row = ev.target.closest('.row');
     if (row && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); openEntry(row.dataset.id); }
   });
-  $('search').addEventListener('input', ev => { S.search = ev.target.value; renderLog(); });
+  $('search').addEventListener('input', ev => { S.search = ev.target.value; renderBoard(); });
 
   /* ===================== 요약 ===================== */
 
@@ -180,6 +315,7 @@
     if (!b) return;
     S.search = b.dataset.crew;
     $('search').value = S.search;
+    LV.tab = 'rec'; saveLV();
     show('log');
   });
 
@@ -1117,6 +1253,7 @@
       await DB.putEntries(list);
       for (const e of list) { const i = S.entries.findIndex(x => x.id === e.id); if (i >= 0) S.entries[i] = e; else S.entries.push(e); }
       if (!pf.empNo && D0.emp) await saveSettings({ profile: Object.assign({}, pf, { empNo: D0.emp, name: pf.name || D0.me }) });
+      LV.tab = 'up'; saveLV(); // 가져온 예정 비행이 바로 보이게
       render(true);
       toast(`예정 비행 ${r.add.length}건을 넣었습니다. 비행 후 눌러서 시각만 넣으면 됩니다.`, 5000);
       markDirty();

@@ -565,3 +565,41 @@ test('취소 감지는 그 달 전체 기준, 함께 탄 사람은 고친 이름
   const e = Object.assign({}, first[0], { copilotName: 'LEE FO' });
   assert.deepEqual(L.crewNamesOf(e), ['LEE FO']); // 스케줄 원래 부기장(김부기)은 빼고
 });
+
+/* ===== 로그북 목록 보기 ===== */
+test('목록: 오늘·예정 / 기록 / 전체, 정렬, 필터', () => {
+  const now = utc(2026, 11, 27, 3, 0), today = '2026-11-27';
+  const rec = (d, extra) => L.recalc(L.newEntry(Object.assign({ origin: 'RKSI', destination: 'RJBB', aircraftType: 'A321', out: utc(2026, 11, d, 0, 0), in: utc(2026, 11, d, 2, 0) }, extra)), { takeoff: true, landing: true });
+  const plan = (d, extra) => L.newEntry(Object.assign({ planned: true, source: 'schedule', flightNumber: 'KE' + d, origin: 'RKSS', destination: 'RKPC', logDate: `2026-11-${String(d).padStart(2, '0')}`, schedOut: utc(2026, 11, d, 1, 0), schedIn: utc(2026, 11, d, 2, 10) }, extra));
+  const list = [
+    rec(10, { flightNumber: 'OZ10', fn: 'PIC' }), rec(20, { flightNumber: 'OZ20', fn: 'SIC', registration: 'HL8399' }), rec(27, { flightNumber: 'OZ27', fn: 'PIC', instructing: true }),
+    L.newEntry({ isSimulator: true, logDate: '2026-11-15', block: 240 }),
+    plan(25), plan(27), plan(28), plan(30), Object.assign(plan(29), { deleted: true })
+  ];
+  const ids = v => v.items.map(e => e.flightNumber || 'SIM');
+  const up = L.logView(list, { tab: 'up', sort: 'asc', now, today });
+  assert.deepEqual(ids(up), ['OZ27', 'KE27', 'KE28', 'KE30']); // 오늘 비행부터
+  assert.deepEqual(up.stale.map(e => e.flightNumber), ['KE25']);   // 기록 안 한 지난 예정
+  assert.equal(up.totals.planned, 3);
+  assert.equal(up.totals.plannedBlock, 210);
+  assert.deepEqual(ids(L.logView(list, { tab: 'up', sort: 'desc', now, today })), ['KE30', 'KE28', 'KE27', 'OZ27']);
+  const r = L.logView(list, { tab: 'rec', sort: 'desc', now, today });
+  assert.deepEqual(ids(r), ['OZ27', 'OZ20', 'SIM', 'OZ10']);
+  assert.equal(r.totals.flights, 3);
+  assert.equal(r.totals.block, 360);
+  const all = L.logView(list, { tab: 'all', sort: 'asc', now, today });
+  assert.equal(all.items[all.todayIndex].logDate, '2026-11-27');
+  // 필터
+  const f = (filter, tab = 'rec') => ids(L.logView(list, { tab, sort: 'asc', now, today, filter }));
+  assert.deepEqual(f({ fn: 'PIC' }), ['OZ10', 'OZ27']);
+  assert.deepEqual(f({ fn: 'SIC' }), ['OZ20']);
+  assert.deepEqual(f({ fn: 'instr' }), ['OZ27']);
+  assert.deepEqual(f({ kind: 'sim' }), ['SIM']);
+  assert.deepEqual(f({ reg: 'hl 8399' }), ['OZ20']);
+  assert.deepEqual(f({ period: 'custom', from: '2026-11-15', to: '2026-11-20' }), ['SIM', 'OZ20']);
+  assert.deepEqual(f({ apt: 'CJU' }, 'all'), ['KE25', 'KE27', 'KE28', 'KE30']);
+  assert.deepEqual(L.periodRange('lastMonth', '2026-01-15'), ['2025-12-01', '2025-12-31']);
+  assert.deepEqual(L.periodRange('90d', '2026-11-27'), ['2026-08-30', '2026-11-27']);
+  assert.equal(L.filterActive({ period: '', night: false }), false);
+  assert.equal(L.filterActive({ fn: 'PIC' }), true);
+});

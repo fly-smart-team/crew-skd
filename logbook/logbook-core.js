@@ -1230,6 +1230,93 @@
     return [...map.values()].sort((a, b) => b.count - a.count || (a.last < b.last ? 1 : -1));
   }
 
+  /* ===================== 로그북 목록 보기 (탭·필터·정렬) ===================== */
+
+  const shiftDay = (d, n) => { const t = Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) + n * DAY; return new Date(t).toISOString().slice(0, 10); };
+
+  /** 기간 필터 → [시작일, 종료일] (로그북 날짜 기준, 'yyyy-MM-dd') */
+  function periodRange(period, today, from, to) {
+    const y = today.slice(0, 4), m = +today.slice(5, 7);
+    const monthEnd = (yy, mm) => `${yy}-${pad2(mm)}-${pad2(new Date(Date.UTC(+yy, mm, 0)).getUTCDate())}`;
+    switch (period) {
+      case 'thisMonth': return [today.slice(0, 7) + '-01', monthEnd(y, m)];
+      case 'lastMonth': { const yy = m === 1 ? +y - 1 : +y, mm = m === 1 ? 12 : m - 1; return [`${yy}-${pad2(mm)}-01`, monthEnd(yy, mm)]; }
+      case '90d': return [shiftDay(today, -89), today];
+      case 'thisYear': return [`${y}-01-01`, `${y}-12-31`];
+      case 'custom': return [from || '0000-01-01', to || '9999-12-31'];
+      default: return null;
+    }
+  }
+
+  const FILTER_DEFAULT = { period: '', from: '', to: '', kind: '', fn: '', type: '', apt: '', reg: '', night: false, photo: false };
+  const filterActive = f => !!f && Object.keys(FILTER_DEFAULT).some(k => f[k] && f[k] !== FILTER_DEFAULT[k]);
+
+  /** 필터 조건에 맞는지 */
+  function matchFilter(e, f, today, display) {
+    if (!f) return true;
+    const r = periodRange(f.period, today, f.from, f.to);
+    if (r && (e.logDate < r[0] || e.logDate > r[1])) return false;
+    if (f.kind === 'flight' && e.isSimulator) return false;
+    if (f.kind === 'sim' && !e.isSimulator) return false;
+    if (f.fn === 'instr' && !instructingOf(e)) return false;
+    if (f.fn === 'exam' && !e.examining) return false;
+    if (f.fn && FUNCTIONS[f.fn] && (e.isSimulator || fnOf(e) !== f.fn)) return false;
+    if (f.type && String(e.aircraftType || '').toUpperCase() !== String(f.type).toUpperCase()) return false;
+    if (f.apt) {
+      const q = String(f.apt).toUpperCase().trim();
+      const codes = [e.origin, e.destination, display ? display(e.origin) : '', display ? display(e.destination) : ''].map(x => String(x || '').toUpperCase());
+      if (!codes.some(c => c === q || (q.length >= 2 && c.startsWith(q)))) return false;
+    }
+    if (f.reg && !String(e.registration || '').toUpperCase().replace(/[\s-]/g, '').includes(String(f.reg).toUpperCase().replace(/[\s-]/g, ''))) return false;
+    if (f.night && !(e.night > 0 || e.nightTakeoffs > 0 || e.nightLandings > 0)) return false;
+    if (f.photo && !e.hasPhoto) return false;
+    return true;
+  }
+
+  /** 검색어: 편명·HL·기종·공항·날짜·비고·함께 탄 사람 */
+  function matchQuery(e, query, display) {
+    const q = String(query || '').trim().toUpperCase();
+    if (!q) return true;
+    const qn = q.replace(/\s+/g, '');
+    return [e.flightNumber, e.registration, e.aircraftType, display ? display(e.origin) : '', display ? display(e.destination) : '', e.origin, e.destination, e.logDate, e.remarks]
+      .some(x => String(x || '').toUpperCase().includes(q)) || crewNamesOf(e).some(n => n.toUpperCase().replace(/\s+/g, '').includes(qn));
+  }
+
+  /**
+   * 로그북 목록.
+   * opts: { tab: 'up'(오늘·예정) | 'rec'(기록) | 'all', sort: 'asc' | 'desc', filter, query, today ('yyyy-MM-dd'), now (ms), display }
+   * 반환: { items, stale (오늘·예정 탭의 '기록 안 한 지난 비행'), todayIndex (전체 탭에서 '오늘' 구분선 넣을 위치, 없으면 -1), totals }
+   */
+  function logView(entries, opts) {
+    const o = Object.assign({ tab: 'up', sort: 'asc', now: Date.now() }, opts);
+    if (!o.display) { const db = airportDB(); o.display = c => db.display(c); }
+    const today = o.today || dateIn(o.now, 'Asia/Seoul');
+    const staleBefore = o.now - 36 * 3600e3;
+    const isStale = e => e.planned && e.logDate < today && (e.schedOut == null || e.schedOut < staleBefore);
+    let list = entries.filter(e => !e.deleted);
+    let stale = [];
+    if (o.tab === 'up') {
+      stale = list.filter(isStale);
+      list = list.filter(e => (e.planned && !isStale(e)) || (!e.planned && e.logDate === today));
+    } else if (o.tab === 'rec') list = list.filter(e => !e.planned);
+    const keep = e => matchFilter(e, o.filter, today, o.display) && matchQuery(e, o.query, o.display);
+    list = list.filter(keep);
+    stale = stale.filter(keep);
+    const dir = o.sort === 'desc' ? -1 : 1;
+    const cmp = (a, b) => (a.logDate === b.logDate ? eventTime(a) - eventTime(b) : a.logDate < b.logDate ? -1 : 1) * dir;
+    list.sort(cmp);
+    stale.sort((a, b) => eventTime(b) - eventTime(a));
+    let todayIndex = -1;
+    if (o.tab === 'all') todayIndex = list.findIndex(e => (dir > 0 ? e.logDate >= today : e.logDate <= today));
+    const t = { flights: 0, sims: 0, block: 0, planned: 0, plannedBlock: 0 };
+    for (const e of list) {
+      if (e.planned) { t.planned++; if (e.schedOut != null && e.schedIn != null) t.plannedBlock += Math.round((e.schedIn - e.schedOut) / MIN); }
+      else if (e.isSimulator) t.sims++;
+      else { t.flights++; t.block += e.block || 0; }
+    }
+    return { items: list, stale, todayIndex, totals: t, today };
+  }
+
   /* ===================== 백업·동기화·CSV ===================== */
 
   const BACKUP_FORMAT = 'pilot-logbook-backup';
@@ -1282,6 +1369,6 @@
     referenceTime, resolveTimes, sunElevation, nightTime, newEntry, recalc, eventTime, live,
     totals, recency, makeBackup, readBackup, mergeEntries, toCSV, FIELD_LABEL,
     FUNCTIONS, fnOf, instructingOf, functionTime, careerAt, AIRCRAFT_TYPES, AIRCRAFT_ALIASES, aircraftInfo, distanceNm, sunTimes, isFaaNight,
-    crewNamesOf, crewIndex, derived, TOTAL_FIELDS, totalsFull, faaCurrency, FORMATS, buildLog, cellText, formatCSV
+    crewNamesOf, crewIndex, periodRange, FILTER_DEFAULT, filterActive, matchFilter, matchQuery, logView, derived, TOTAL_FIELDS, totalsFull, faaCurrency, FORMATS, buildLog, cellText, formatCSV
   };
 });
