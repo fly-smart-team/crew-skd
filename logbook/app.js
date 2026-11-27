@@ -6,10 +6,11 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.27-3'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.27-4'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
-    tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
+    tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight2', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
+    airline: 'KE', regPrefix: 'HL',
     carry: { asOf: '' }, airports: [], aircraft: [], careers: [], profile: {}, print: {}, savedFilters: [], updatedAt: 0
   };
   // [키, 이름, 이륙, 착륙, 그때 정할 역할(fn)] — CRZ·Observer는 이착륙 없이 역할도 바뀜
@@ -38,6 +39,17 @@
   const todayIn = tz => L.dateIn(Date.now(), tz);
   const utcDate = ms => { const d = new Date(ms); return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`; };
   const whenText = ms => { const d = new Date(ms); return `${pad2(d.getUTCMonth() + 1)}/${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}Z`; };
+  /** "731" → "KE731", "ke 731" → "KE731" */
+  const normFlight = v => {
+    const t = String(v || '').toUpperCase().replace(/\s+/g, '');
+    return /^\d{1,4}[A-Z]?$/.test(t) ? (S.settings.airline || '') + t : t;
+  };
+  /** "8399" → "HL8399", "hl-8399" → "HL8399" */
+  const normReg = v => {
+    const t = String(v || '').toUpperCase().replace(/[\s-]+/g, '');
+    const pre = (S.settings.regPrefix || '').toUpperCase();
+    return /^\d{3,5}[A-Z]?$/.test(t) && pre ? pre + t : t === pre ? '' : t;
+  };
   const calcOpts = extra => Object.assign({ airports, tz: S.settings.tz, night: S.settings.night, instrumentRule: S.settings.instrumentRule, ifrRule: S.settings.ifrRule }, extra || {});
 
   async function saveSettings(patch) {
@@ -155,17 +167,18 @@
   function rowHtml(e, today) {
     const title = e.isSimulator ? `SIM · ${esc(e.aircraftType)} ${esc(e.flightNumber)}`
       : `${esc(e.flightNumber || '편명 없음')} <span style="font-weight:600">${esc(airports.display(e.origin))}→${esc(airports.display(e.destination))}</span>`;
-    const fnShort = { PIC: 'PIC', SIC: 'F/O', PICUS: 'PICUS', RELIEF: 'Relief', DUAL: 'Dual', OBS: 'OBS' }[L.fnOf(e)];
-    const sub = [e.aircraftType && !e.isSimulator ? e.aircraftType : '', e.registration, e.isSimulator ? e.fstdType : fnShort,
-      L.instructingOf(e) ? 'IP' : '', e.examining ? '평가' : '', e.isSimulator ? '' : L.crewNamesOf(e).slice(0, 2).join(', ')].filter(Boolean).map(esc).join(' · ');
-    const badges = e.planned ? [
+    const sub = [e.aircraftType && !e.isSimulator ? e.aircraftType : '', e.registration, e.isSimulator ? e.fstdType : '',
+      e.isSimulator ? '' : L.crewNamesOf(e).slice(0, 2).join(', ')].filter(Boolean).map(esc).join(' · ');
+    const dutyBadge = e.isSimulator ? '' : `<span class="badge duty" title="Duty">${esc({ PIC: 'PIC', SIC: 'F/O', PICUS: 'PICUS', RELIEF: 'CRZ', DUAL: 'Dual', OBS: 'OBS' }[L.fnOf(e)])}</span>` +
+      (L.instructingOf(e) ? '<span class="badge duty">IP</span>' : '') + (e.examining ? '<span class="badge duty">평가</span>' : '');
+    const badges = dutyBadge + (e.planned ? [
       '<span class="badge plan">예정</span>',
       e.roleSure === false ? '<span class="badge warn">역할 확인</span>' : ''
     ].join('') : [
       e.takeoffs > 0 ? `<span class="badge">T/O${e.nightTakeoffs ? ' ☾' : ''}${e.takeoffs > 1 ? ' ×' + e.takeoffs : ''}</span>` : '',
       e.landings > 0 ? `<span class="badge">L/D${e.nightLandings ? ' ☾' : ''}${e.landings > 1 ? ' ×' + e.landings : ''}</span>` : '',
       e.hasPhoto ? '<span class="badge" title="스캔 사진 있음">📷</span>' : ''
-    ].join('');
+    ].join(''));
     const blk = e.planned
       ? `<span class="blk"><span class="t">${e.schedOut != null && !e.schedNoTime ? L.zulu(e.schedOut) + 'Z' : '—'}</span><small>STD</small></span>`
       : `<span class="blk"><span class="t">${L.hmm(e.block)}</span>${e.night ? `<small>☾ ${L.hmm(e.night)}</small>` : ''}</span>`;
@@ -417,7 +430,9 @@
         <div class="field"><label for="sSched">MONTHLY SKD의 STD·STA 시각 기준 (Crew Roster는 자동으로 현지 시각)</label>${selectHtml('sSched', [['Asia/Seoul', '한국 시간'], ['UTC', 'UTC']], st.schedTz || 'Asia/Seoul')}</div>
         <div class="field"><label for="sNight">야간 시간 기준</label>${selectHtml('sNight', [['civil', '시민박명 (ICAO·FAA 기록 기준)'], ['sunset', '일몰 ~ 일출']], st.night)}</div>
         <div class="field"><label for="sIfr">IFR 시간 (ICAO 10번 칸)</label>${selectHtml('sIfr', [['block', '블록시간과 같게'], ['flight', '비행시간(OFF→ON)과 같게'], ['manual', '직접 입력']], st.ifrRule)}</div>
-        <div class="field"><label for="sInst">실계기 (회사 I/T·FAA Actual)</label>${selectHtml('sInst', [['flight', '비행시간(OFF→ON)과 같게'], ['block', '블록시간과 같게'], ['manual', '직접 입력']], st.instrumentRule)}</div>
+        <div class="field"><label for="sInst">실계기 (회사 I/T·FAA Actual)</label>${selectHtml('sInst', [['flight2', '비행시간 − 2분 (회사 로그북과 같음)'], ['flight', '비행시간(OFF→ON)과 같게'], ['block', '블록시간과 같게'], ['manual', '직접 입력']], st.instrumentRule)}</div>
+        ${field('sAirline', 'FLIGHT ID 기본 앞자리 (항공사 코드)', st.airline, 'autocapitalize="characters" maxlength="3" placeholder="KE"')}
+        ${field('sRegPre', '등록부호 기본 앞자리', st.regPrefix, 'autocapitalize="characters" maxlength="3" placeholder="HL"')}
       </div></div>
 
       <h2>기종</h2>
@@ -492,6 +507,8 @@
     $('sSched').addEventListener('change', ev => saveSettings({ schedTz: ev.target.value }));
     $('sIfr').addEventListener('change', ev => saveSettings({ ifrRule: ev.target.value }));
     $('sInst').addEventListener('change', ev => saveSettings({ instrumentRule: ev.target.value }));
+    $('sAirline').addEventListener('change', ev => saveSettings({ airline: ev.target.value.trim().toUpperCase() }));
+    $('sRegPre').addEventListener('change', ev => saveSettings({ regPrefix: ev.target.value.trim().toUpperCase() }));
     // 기종
     $('addAc').addEventListener('click', async () => {
       const code = $('tCode').value.trim().toUpperCase().replace(/\s+/g, '');
@@ -646,6 +663,11 @@
 
   function draftFrom(entry, extra) {
     const e = Object.assign({}, entry);
+    if (!e.isSimulator) {
+      if (!e.registration) e.registration = S.settings.regPrefix || '';
+      if (!e.flightNumber) e.flightNumber = S.settings.airline || '';
+      if (!e.approachType && !e.approaches) { e.approaches = 1; e.approachType = 'ILS'; }
+    }
     const hh = ms => (ms == null ? '' : L.zulu(ms));
     const f = L.fnOf(e);
     const role = f === 'RELIEF' ? ROLES[4] : f === 'OBS' ? ROLES[5] : ROLES.find(r => !r[4] && r[2] === e.takeoffs > 0 && r[3] === e.landings > 0);
@@ -667,15 +689,15 @@
     // 기종: 직접 고치지 않았으면 그 날짜 경력 단계의 기종. 등록부호는 기종이 같을 때만 지난 기록 것을 씀
     if (c && c.aircraftType && !D.typeTouched && e.aircraftType !== c.aircraftType) {
       e.aircraftType = c.aircraftType;
-      if (D.lastReg && D.lastReg.type !== c.aircraftType) e.registration = '';
+      if (D.lastReg && D.lastReg.type !== c.aircraftType) e.registration = S.settings.regPrefix || '';
     }
     D.career = c;
   }
 
   function newFlightDraft() {
     const last = live().filter(e => !e.isSimulator && !e.planned).sort((a, b) => b.createdAt - a.createdAt)[0];
-    const e = L.newEntry({ aircraftType: (last && last.aircraftType) || '', registration: (last && last.registration) || '',
-      logDate: todayIn(S.settings.tz), approaches: 1, approachType: 'ILS' });
+    const e = L.newEntry({ aircraftType: (last && last.aircraftType) || '', registration: (last && last.registration) || S.settings.regPrefix || '',
+      flightNumber: S.settings.airline || '', logDate: todayIn(S.settings.tz), approaches: 1, approachType: 'ILS' });
     D = draftFrom(e, { isNew: true, role: null, hhmm: { out: '', off: '', on: '', in: '' }, lastReg: last ? { type: last.aircraftType, reg: last.registration } : null });
     if (!D.e.aircraftType) D.e.aircraftType = S.settings.defaultType;
     applyCareer(D.e.logDate);
@@ -734,7 +756,7 @@
   function missingFields() {
     const e = D.e, m = [];
     if (e.isSimulator) { if (!e.logDate) m.push('날짜'); return m; }
-    if (!e.flightNumber.trim()) m.push('편명');
+    if (!/\d/.test(e.flightNumber)) m.push('편명');
     if (!e.origin || !e.destination) m.push('출발·도착');
     if (e.out == null || e.in == null) m.push('OUT·IN 시각');
     if (!D.role) m.push('T/O·L/D');
@@ -795,14 +817,15 @@
     const t0 = resolveDraftTimes();
     const r = { schedOut: e.schedOut != null ? e.schedOut : t0.out != null ? t0.out : od, schedIn: e.schedIn != null ? e.schedIn : t0.in };
     const miss = [];
-    if (!e.flightNumber.trim()) miss.push('편명');
+    e.flightNumber = normFlight(e.flightNumber); e.registration = normReg(e.registration);
+    if (!/\d/.test(e.flightNumber)) miss.push('편명');
     if (!e.origin || !e.destination) miss.push('출발·도착');
     if (r.schedOut == null) miss.push('날짜');
     if (miss.length) return toast('예정으로 저장하려면: ' + miss.join(', '), 4000);
     const t = Object.assign({}, e, {
       planned: true, schedOut: r.schedOut, schedIn: r.schedIn, out: null, off: null, on: null, in: null,
       schedNoTime: e.schedOut == null && t0.out == null, // 날짜만 넣은 예정 비행
-      flightNumber: e.flightNumber.toUpperCase().replace(/\s+/g, ''), logDate: L.dateIn(r.schedOut, S.settings.tz),
+      flightNumber: e.flightNumber, logDate: L.dateIn(r.schedOut, S.settings.tz),
       // 앱에서 고친 스케줄 예정 비행은 다음 스케줄 가져오기 때 "취소"로 잘못 지우지 않도록 표시
       source: e.source === 'schedule' ? 'schedule-edited' : (e.source === 'scan' ? 'manual' : e.source || 'manual'),
       updatedAt: Date.now()
@@ -830,10 +853,10 @@
       <div class="mcdu" role="group" aria-label="OOOI 입력">
         <div class="m-title">AOC OOOI STATUS <span>UTC</span></div>
         <div class="m-grid">
-          ${box(flagged('flightID') ? 'flag' : '', 'FLIGHT ID', txt('flightNumber', 'OZ731'))}
+          ${box(flagged('flightID') ? 'flag' : '', 'FLIGHT ID', txt('flightNumber', (S.settings.airline || '') + '731'))}
           ${box('', 'ORIG/DEST', `<span class="m-od">${apt('origin')}<b>/</b>${apt('destination')}</span><span class="m-sub"><span data-apt-name="origin"></span><span data-apt-name="destination"></span></span>`, true)}
           ${box('', 'A/C', txt('aircraftType', 'A321'))}
-          ${box('', 'REG', txt('registration', 'HL8399'), true)}
+          ${box('', 'REG', txt('registration', (S.settings.regPrefix || '') + '8399'), true)}
           ${box('', 'DATE (OUT)', `<input class="m-in m-date" type="date" id="outDate" value="${esc(D.outDate)}">`)}
           ${box('', 'LOG DATE', `<span class="m-val" id="logDateShow"></span>`, true)}
           ${tm('out')}${tm('off', true)}
@@ -851,8 +874,8 @@
         ${D.role ? '' : '<p class="why">90일 이착륙 횟수에 들어가므로 꼭 골라 주세요.</p>'}
         <p class="help" style="margin-bottom:0">CRZ: 순항 교대 조종사 — ICAO 양식은 Co-pilot, FAA 양식은 SIC 칸에 들어갑니다. Observer: 기록만 남고 비행시간·누계에는 들어가지 않습니다.</p>
       </div>
-      <div class="sec"><h3>역할 ${D.career ? `<span class="help">— 경력 단계 "${esc(D.career.title || L.FUNCTIONS[D.career.fn].label)}" 기준</span>` : ''}</h3><div class="grid">
-        <div class="field"><label>이 비행에서 나의 역할</label><select id="fnSel">${Object.entries(L.FUNCTIONS).map(([k, v]) => `<option value="${k}"${L.fnOf(e) === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}</select></div>
+      <div class="sec"><h3>Duty ${D.career ? `<span class="help">— 경력 단계 "${esc(D.career.title || L.FUNCTIONS[D.career.fn].label)}" 기준</span>` : ''}</h3><div class="grid">
+        <div class="field"><label>Duty (이 비행에서 나의 역할)</label><select id="fnSel">${Object.entries(L.FUNCTIONS).map(([k, v]) => `<option value="${k}"${L.fnOf(e) === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}</select></div>
         <div class="field" id="picNameBox"><label>기장 이름 (ICAO 8번 칸)</label><input data-f="picName" value="${esc(e.picName)}" placeholder="HONG GILDONG" autocomplete="off" list="crewNames"></div>
         <div class="field"><label>함께 탄 조종사 (여럿이면 쉼표)</label><input data-f="copilotName" value="${esc(e.copilotName)}" placeholder="KIM CHULSOO" autocomplete="off" list="crewNames"></div>
         <datalist id="crewNames">${L.crewIndex(S.entries).slice(0, 200).map(x => `<option value="${esc(x.name)}">`).join('')}</datalist>
@@ -1012,7 +1035,7 @@
     const e = D.e, now = Date.now();
     const probs = timeProblems();
     if (probs.length && !confirm('시각이 이상합니다:\n\n• ' + probs.join('\n• ') + '\n\n그래도 저장할까요?')) return;
-    if (!e.isSimulator) e.flightNumber = e.flightNumber.toUpperCase().replace(/\s+/g, '');
+    if (!e.isSimulator) { e.flightNumber = normFlight(e.flightNumber); e.registration = normReg(e.registration); }
     let target = e;
     if (D.isNew && !e.isSimulator) {
       const dup = live().find(x => x.id !== e.id && !x.isSimulator && x.logDate === e.logDate && x.flightNumber === e.flightNumber);
@@ -1541,6 +1564,9 @@
       S.settings.carry = Object.assign({}, DEFAULT_SETTINGS.carry, S.settings.carry || {});
       S.sync = sync || {};
       airports = L.airportDB(S.settings.airports);
+      if (!S.settings.instr2 && (!settings || !settings.instrumentRule || settings.instrumentRule === 'flight')) {
+        S.settings.instrumentRule = 'flight2'; S.settings.instr2 = true; DB.set('settings', S.settings);
+      }
     } catch (err) {
       toast('저장소를 열 수 없습니다: ' + err.message, 8000);
     }

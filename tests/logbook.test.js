@@ -621,3 +621,9 @@ test('계기 접근: VISUAL은 계기 접근에서 제외, 순항 교대·옵저
   assert.equal(L.buildLog([crz], { format: 'faa' }).pages[0].pageTotal.sic, 120); // CRZ → FAA SIC
   assert.equal(L.totalsFull([crz, obs]).flights, 1);
 });
+
+test('실계기: 비행시간 − 2분 규칙', () => {
+  const e = L.recalc(L.newEntry({ origin: 'RKSI', destination: 'RJCC', out: utc(2026, 11, 1, 0, 0), off: utc(2026, 11, 1, 0, 15), on: utc(2026, 11, 1, 2, 22), in: utc(2026, 11, 1, 2, 30) }), { instrumentRule: 'flight2' });
+  assert.equal(e.flight, 127);
+  assert.equal(e.instrument, 125); // 회사 로그북: T/S 2:07 → I/T 2:05
+});

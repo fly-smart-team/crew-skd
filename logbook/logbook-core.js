@@ -751,7 +751,7 @@
 
   /**
    * 시각·공항으로 날짜/블록/비행/야간/계기 재계산.
-   * opts: { airports, tz('Asia/Seoul'), night('civil'|'sunset'), instrumentRule('flight'|'block'|'manual'), takeoff, landing }
+   * opts: { airports, tz('Asia/Seoul'), night('civil'|'sunset'), instrumentRule('flight2'|'flight'|'block'|'manual'), takeoff, landing }
    * takeoff/landing이 true/false면 이착륙 횟수를 정하고, undefined면 기존 값 유지
    */
   function recalc(e, opts) {
@@ -767,7 +767,8 @@
     if (n && !e.nightManual) e.night = n.minutes;
     if (!e.instrumentManual) {
       const rule = opts.instrumentRule || 'flight';
-      if (rule === 'flight') e.instrument = e.flight;
+      if (rule === 'flight2') e.instrument = Math.max(0, e.flight - 2); // 회사 로그북 방식: 비행시간 − 2분
+      else if (rule === 'flight') e.instrument = e.flight;
       else if (rule === 'block') e.instrument = e.block;
     }
     if (!e.ifrManual) {
