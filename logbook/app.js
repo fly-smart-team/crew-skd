@@ -1,12 +1,12 @@
 /* 조종사 전자 로그북 — 화면 */
 (function () {
   'use strict';
-  const L = window.LOGBOOK, OCR = window.LOGBOOK_OCR, DB = window.LOGBOOK_STORE, DRIVE = window.LOGBOOK_DRIVE, LS = window.LOGBOOK_SKD, ICLOUD = window.LOGBOOK_ICLOUD;
+  const L = window.LOGBOOK, OCR = window.LOGBOOK_OCR, DB = window.LOGBOOK_STORE, DRIVE = window.LOGBOOK_DRIVE, LS = window.LOGBOOK_SKD, ICLOUD = window.LOGBOOK_ICLOUD, CL = window.LOGBOOK_COMPANY;
   const $ = id => document.getElementById(id);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.27-4'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.27-5'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight2', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
@@ -1213,6 +1213,126 @@
     try { await navigator.clipboard.writeText(text); toast('인식 결과를 복사했습니다. 대화창에 붙여 넣어 보내 주세요.', 5000); }
     catch (e) { downloadFile(text, 'ocr-result.json', 'application/json'); toast('인식 결과 파일을 내려받았습니다.'); }
   }
+
+  /* ===================== 회사 Flight Log 사진 가져오기 ===================== */
+
+  let CLS = null; // { rows, summary, carry, edgeWarning }
+
+  $('clFile').addEventListener('change', async ev => {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = '';
+    if (!file) return;
+    busy(true, '사진 준비 중…');
+    try {
+      const { lines } = await OCR.scanPaper(file, { onStep: t => busy(true, t) });
+      const r = CL.parseCompanyLog(lines, { airports });
+      busy(false);
+      if (!r.rows.length) return toast('회사 Flight Log 표를 찾지 못했습니다. 표 전체가 반듯하게 나오도록 다시 찍어 주세요.', 7000);
+      CLS = Object.assign(r, { carry: CL.carryFromSummary(r.summary, r.rows) });
+      openCompanyReview();
+    } catch (err) {
+      busy(false);
+      toast('읽기 실패: ' + (err && err.message || err), 7000);
+    }
+  });
+
+  const hm = v => (v == null ? '' : L.hmm(v));
+  const md = ms => (ms == null ? '' : `${pad2(new Date(ms).getUTCMonth() + 1)}/${pad2(new Date(ms).getUTCDate())} ${L.zulu(ms).slice(0, 2)}:${L.zulu(ms).slice(2)}`);
+
+  function openCompanyReview() {
+    const { rows, summary, carry } = CLS;
+    const key = r => r.logDate + '|' + normFlight(r.flightNumber);
+    const existing = new Map(S.entries.filter(e => !e.deleted).map(e => [e.logDate + '|' + e.flightNumber, e]));
+    const nWarn = rows.filter(r => !r.ok).length;
+    rows.forEach(r => { const ex = existing.get(key(r)); r.dup = ex && !ex.planned ? ex : null; r.plan = ex && ex.planned ? ex : null; });
+    const cell = (i, f, v, w) => `<input type="text" data-cl="${i}" data-k="${f}" value="${esc(v)}" style="width:${w}" autocomplete="off" autocapitalize="characters">`;
+    const hasCarry = carry && carry.total > 0;
+    $('clBody').innerHTML = `
+      <div class="sec"><h3>읽은 결과</h3>
+        <p style="margin:0">표에서 <b>${rows.length}줄</b>을 읽었습니다.${nWarn ? ` <b style="color:var(--warn)">${nWarn}줄은 확인이 필요합니다</b>(노란 줄).` : ' 모두 검산(Duty time = R/I − R/O)을 통과했습니다.'}
+          ${rows.some(r => r.dup) ? ` 이미 있는 비행 ${rows.filter(r => r.dup).length}줄은 빼 두었습니다.` : ''}</p>
+        ${CLS.edgeWarning ? '<p class="why">L/D 칸이 사진 가장자리에 걸려 있어 별표(*)를 놓쳤을 수 있습니다. T/O·L/D 체크를 확인해 주세요. 다음에는 표 전체가 들어오게 찍어 주세요.</p>' : ''}
+        <p class="help" style="margin-bottom:6px">칸을 눌러 고칠 수 있습니다. 시각은 UTC(R/O·R/I = 회사 로그 그대로), 시간은 시:분.</p>
+        <div class="field" style="max-width:260px"><label for="clAirline">편명 앞자리 (숫자만 있는 편명에 붙임)</label><input id="clAirline" value="${esc(S.settings.airline || '')}" maxlength="3" autocapitalize="characters" placeholder="OZ / KE"></div>
+      </div>
+      ${hasCarry ? `<div class="sec"><h3>이월 누계 (Flight Summary 기준)</h3>
+        <p style="margin:0 0 6px">${esc(carry.asOf.replace(/-/g, '/'))}까지: 총 <b class="mono">${hm(carry.total)}</b> · CAP <b class="mono">${hm(carry.pic)}</b> · 야간 <b class="mono">${hm(carry.night)}</b> · 계기 <b class="mono">${hm(carry.instrument)}</b></p>
+        <p class="help" style="margin:0 0 6px">표의 누계(총 ${hm(summary.total)})에서 이 표의 비행을 뺀 값입니다. 이 표의 비행은 아래에서 기록으로 들어갑니다.</p>
+        <label style="display:inline-flex;gap:8px;align-items:center"><input type="checkbox" id="clCarry" ${S.settings.carry && S.settings.carry.total ? '' : 'checked'} style="width:20px;height:20px;min-height:0"> 이월 누계를 이 값으로 바꾸기${S.settings.carry && S.settings.carry.total ? ` (지금: ${hm(S.settings.carry.total)}, ${esc(S.settings.carry.asOf || '')}까지)` : ''}</label>
+      </div>` : ''}
+      <div style="overflow-x:auto"><table class="cl-table">
+        <thead><tr><th>넣기</th><th>Date</th><th>FLT</th><th>Route</th><th>HL</th><th>Duty</th><th>R/O (UTC)</th><th>R/I (UTC)</th><th>Block</th><th>T/S</th><th>N/T</th><th>I/T</th><th>T/O</th><th>L/D</th></tr></thead>
+        <tbody>${rows.map((r, i) => `
+          <tr class="${r.ok ? '' : 'warn'}${r.dup ? ' dup' : ''}">
+            <td><input type="checkbox" data-cl="${i}" data-k="use" ${r.dup ? '' : 'checked'}></td>
+            <td class="mono">${esc(r.logDate.slice(5).replace('-', '/'))}</td>
+            <td>${cell(i, 'flightNumber', r.flightNumber, '7ch')}</td>
+            <td>${cell(i, 'route', r.origin + '-' + r.destination, '8ch')}</td>
+            <td>${cell(i, 'registration', r.registration, '7ch')}</td>
+            <td>${cell(i, 'duty', r.duty, '3ch')}</td>
+            <td>${cell(i, 'ro', md(r.out), '12ch')}</td>
+            <td>${cell(i, 'ri', md(r.in), '12ch')}</td>
+            <td>${cell(i, 'block', hm(r.block), '6ch')}</td>
+            <td>${cell(i, 'flight', hm(r.flight), '6ch')}</td>
+            <td>${cell(i, 'night', hm(r.night), '6ch')}</td>
+            <td>${cell(i, 'instrument', hm(r.instrument), '6ch')}</td>
+            <td><input type="checkbox" data-cl="${i}" data-k="takeoff" ${r.takeoff ? 'checked' : ''}></td>
+            <td><input type="checkbox" data-cl="${i}" data-k="landing" ${r.landing ? 'checked' : ''}></td>
+          </tr>
+          ${r.issues.length || r.dup || r.plan ? `<tr class="${r.ok ? '' : 'warn'}"><td></td><td colspan="13" class="iss">${[r.dup ? '이미 기록된 비행' : '', r.plan ? '예정 비행을 이 기록으로 바꿉니다' : ''].concat(r.issues).filter(Boolean).map(esc).join(' · ')}</td></tr>` : ''}`).join('')}
+        </tbody></table></div>`;
+    $('clDlg').showModal();
+  }
+
+  /** 검토 표에서 고친 값 반영 */
+  function readCompanyRow(i) {
+    const r = Object.assign({}, CLS.rows[i]);
+    const v = k => { const el = document.querySelector(`[data-cl="${i}"][data-k="${k}"]`); return el ? (el.type === 'checkbox' ? el.checked : el.value.trim()) : null; };
+    if (!v('use')) return null;
+    const pre = ($('clAirline').value || '').trim().toUpperCase(), f = (v('flightNumber') || '').toUpperCase().replace(/\s+/g, '');
+    r.flightNumber = /^\d/.test(f) ? pre + f : f;
+    const [o, d] = v('route').toUpperCase().split(/\W+/);
+    r.origin = o || r.origin; r.destination = d || r.destination;
+    r.registration = normReg(v('registration'));
+    r.duty = (v('duty') || 'C').toUpperCase();
+    const year = +r.logDate.slice(0, 4), mon = +r.logDate.slice(5, 7);
+    const toMs = t => {
+      const m = /^(\d\d)\/(\d\d)\s+(\d\d):?(\d\d)$/.exec(t || '');
+      if (!m) return null;
+      let y = year;
+      if (+m[1] === 12 && mon === 1) y--; else if (+m[1] === 1 && mon === 12) y++;
+      return Date.UTC(y, +m[1] - 1, +m[2], +m[3], +m[4]);
+    };
+    r.out = toMs(v('ro')); r.in = toMs(v('ri'));
+    for (const k of ['block', 'flight', 'night', 'instrument']) r[k] = L.parseHMM(v(k));
+    if (r.block == null && r.out != null && r.in != null) r.block = Math.round((r.in - r.out) / MIN);
+    r.takeoff = v('takeoff'); r.landing = v('landing');
+    return r;
+  }
+
+  $('clCancel').addEventListener('click', () => { if (confirm('가져오지 않고 닫을까요?')) $('clDlg').close(); });
+  $('clImport').addEventListener('click', async () => {
+    const picked = CLS.rows.map((_, i) => readCompanyRow(i)).filter(Boolean);
+    const bad = picked.filter(r => r.out == null || r.in == null || !r.block);
+    if (bad.length) return toast(`R/O·R/I·Block을 확인해 주세요: ${bad.map(r => r.logDate.slice(5) + ' ' + r.flightNumber).join(', ')}`, 7000);
+    const opts = calcOpts({ airline: S.settings.airline });
+    const list = picked.map(r => {
+      const e = CL.rowToEntry(r, opts);
+      const plan = S.entries.find(x => x.planned && !x.deleted && x.logDate === e.logDate && x.flightNumber === e.flightNumber);
+      if (plan) Object.assign(e, { id: plan.id, createdAt: plan.createdAt, copilotName: plan.copilotName, picName: plan.picName, crew: plan.crew, crewList: plan.crewList });
+      return e;
+    });
+    await DB.putEntries(list);
+    for (const e of list) { const i = S.entries.findIndex(x => x.id === e.id); if (i >= 0) S.entries[i] = e; else S.entries.push(e); }
+    if ($('clCarry') && $('clCarry').checked && CLS.carry) {
+      await saveSettings({ carry: Object.assign({}, S.settings.carry, CLS.carry) });
+    }
+    $('clDlg').close();
+    LV.tab = 'rec'; saveLV();
+    render(true);
+    toast(`회사 로그에서 ${list.length}건을 기록으로 넣었습니다.${$('clCarry') && $('clCarry').checked ? ' 이월 누계도 맞췄습니다.' : ''}`, 6000);
+    markDirty();
+  });
 
   /* ===================== 월간 스케줄 가져오기 ===================== */
 

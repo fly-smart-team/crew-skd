@@ -627,3 +627,41 @@ test('실계기: 비행시간 − 2분 규칙', () => {
   assert.equal(e.flight, 127);
   assert.equal(e.instrument, 125); // 회사 로그북: T/S 2:07 → I/T 2:05
 });
+
+/* ===== 회사 Flight Log 사진 (가상 데이터, 실제 OCR 오독 유형을 흉내) ===== */
+const CL = require('../logbook/logbook-companylog.js');
+test('회사 로그: 줄 해석과 오독 복원', () => {
+  const W = (text, x) => ({ text, x0: x - 0.005, x1: x + 0.005 });
+  const line = (text, stars) => ({ text, words: text.split(/\s+/).map((t, i) => W(t, 0.02 + i * 0.05)).concat(stars.map(x => W('*', x))) });
+  const lines = [
+    { text: '| 9000:14 | 2100:48 | 2000:12 2000:12 2400:53 5800:11 | 9:24 hr | 0:0 hr |' },
+    line('2026/12/01 |A321|8399 101  ICN-CTS     C  11/3023:02 12/0101:42 2:40 2:07 0:00 [2:05]', [0.94, 0.99]),
+    line('2026/12/01] A321 8399 102  CTS-ICN     C 12/0102:59 12/0106:224 3:25 2:59 |0:00|2:57]', [0.94]),
+    line('2026/12/03 A321 8279 8993 GMP-CWU     C  12/031006 12/0311:29 1:23 1:00]1:23]0:58|', [0.94]),
+    line('[2026/12/03 A321 8279 8988 CM-GMP    C  12/0312:09 12/03 13:23 1:14 0:55\'1:14]0:53|', [0.99]),
+    line('|   2026/12/04|A321|8398 736  SGN-ICN      C  12/0317:47 12/0322:59 5:12 442 500440] |', []),
+    { text: 'Based on last flight log data from AFLIS                     2026/12/04' }
+  ];
+  const r = CL.parseCompanyLog(lines);
+  assert.equal(r.rows.length, 5);
+  const [a, b, c, d, e] = r.rows;
+  assert.equal(a.out, utc(2026, 11, 30, 23, 2));     // 12월 1일 줄인데 R/O는 11/30 (UTC)
+  assert.equal(a.in, utc(2026, 12, 1, 1, 42));
+  assert.deepEqual([a.block, a.flight, a.night, a.instrument], [160, 127, 0, 125]);
+  assert.deepEqual([a.takeoff, a.landing], [true, true]);
+  assert.equal(b.in, utc(2026, 12, 1, 6, 24));        // "06:224" → 06:24
+  assert.deepEqual([b.takeoff, b.landing], [true, false]);
+  assert.deepEqual([c.origin, c.destination], ['GMP', 'CJU']); // CWU → 비행시간으로 CJU
+  assert.deepEqual([d.origin, d.destination], ['CJU', 'GMP']); // CM → 앞 구간으로 CJU
+  assert.deepEqual([d.takeoff, d.landing], [false, true]);
+  assert.deepEqual([e.block, e.flight, e.night, e.instrument], [312, 282, 300, 280]); // "442 500440"
+  assert.ok(r.rows.every(x => x.ok), JSON.stringify(r.rows.map(x => x.issues)));
+  assert.equal(r.summary.total, 9000 * 60 + 14);
+  assert.equal(r.summary.asOf, '2026-12-04');
+  const carry = CL.carryFromSummary(r.summary, r.rows);
+  assert.equal(carry.asOf, '2026-11-30');
+  assert.equal(carry.total, 9000 * 60 + 14 - (160 + 205 + 83 + 74 + 312));
+  const entry = CL.rowToEntry(a, { airline: 'OZ' });
+  assert.equal(entry.flightNumber, 'OZ101');
+  assert.deepEqual([entry.origin, entry.destination, entry.fn, entry.block, entry.instrument], ['RKSI', 'RJCC', 'PIC', 160, 125]);
+});

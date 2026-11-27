@@ -146,6 +146,106 @@
     }
   }
 
+  /**
+   * 종이 출력물(흰 바탕 검은 글자)용 전처리: 회색조 → 주변보다 어두운 점만 글자 → 표 테두리(긴 선) 지우기
+   * opts: { maxSide, quarter }
+   */
+  function preprocessPaper(img, opts) {
+    opts = opts || {};
+    const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+    const s = (opts.maxSide || 3600) / Math.max(iw, ih);
+    const sw = Math.round(iw * s), sh = Math.round(ih * s);
+    const q = ((opts.quarter || 0) % 4 + 4) % 4;
+    const w = q % 2 ? sh : sw, h = q % 2 ? sw : sh;
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+    ctx.translate(w / 2, h / 2); ctx.rotate(q * Math.PI / 2); ctx.drawImage(img, -sw / 2, -sh / 2, sw, sh);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const d = ctx.getImageData(0, 0, w, h), p = d.data, N = w * h;
+    const v = new Float32Array(N);
+    for (let i = 0, j = 0; j < N; i += 4, j++) v[j] = 0.3 * p[i] + 0.59 * p[i + 1] + 0.11 * p[i + 2];
+    const ii = new Float64Array((w + 1) * (h + 1));
+    for (let y = 0; y < h; y++) { let row = 0; for (let x = 0; x < w; x++) { row += v[y * w + x]; ii[(y + 1) * (w + 1) + x + 1] = ii[y * (w + 1) + x + 1] + row; } }
+    const R = Math.max(8, Math.round(Math.min(w, h) / 45)), ink = new Uint8Array(N);
+    for (let y = 0; y < h; y++) {
+      const y0 = Math.max(0, y - R), y1 = Math.min(h, y + R + 1);
+      for (let x = 0; x < w; x++) {
+        const x0 = Math.max(0, x - R), x1 = Math.min(w, x + R + 1);
+        const mean = (ii[y1 * (w + 1) + x1] - ii[y0 * (w + 1) + x1] - ii[y1 * (w + 1) + x0] + ii[y0 * (w + 1) + x0]) / ((x1 - x0) * (y1 - y0));
+        ink[y * w + x] = v[y * w + x] < mean - 18 ? 1 : 0;
+      }
+    }
+    const kill = new Uint8Array(N), LH = Math.round(w * 0.035), LV = Math.round(h * 0.03);
+    for (let y = 0; y < h; y++) {
+      let run = 0;
+      for (let x = 0; x <= w; x++) {
+        if (x < w && ink[y * w + x]) run++;
+        else { if (run >= LH) for (let k = x - run; k < x; k++) for (let dy = -1; dy <= 1; dy++) if (y + dy >= 0 && y + dy < h) kill[(y + dy) * w + k] = 1; run = 0; }
+      }
+    }
+    for (let x = 0; x < w; x++) {
+      let run = 0;
+      for (let y = 0; y <= h; y++) {
+        if (y < h && ink[y * w + x]) run++;
+        else { if (run >= LV) for (let k = y - run; k < y; k++) for (let dx = -1; dx <= 1; dx++) if (x + dx >= 0 && x + dx < w) kill[k * w + x + dx] = 1; run = 0; }
+      }
+    }
+    for (let j = 0, i = 0; j < N; j++, i += 4) { const o = ink[j] && !kill[j] ? 0 : 255; p[i] = p[i + 1] = p[i + 2] = o; p[i + 3] = 255; }
+    ctx.putImageData(d, 0, 0);
+    return c;
+  }
+
+  /** 글자 줄이 가로로 놓였는지(0·180°) 세로인지(90·270°): 잉크의 행·열 합 변동으로 판단 */
+  function looksSideways(img) {
+    const c = preprocessPaper(img, { maxSide: 900 });
+    const ctx = c.getContext('2d'), w = c.width, h = c.height, p = ctx.getImageData(0, 0, w, h).data;
+    const rows = new Float64Array(h), cols = new Float64Array(w);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (p[(y * w + x) * 4] < 128) { rows[y]++; cols[x]++; }
+    const cv = a => { const m = a.reduce((s, x) => s + x, 0) / a.length || 1; return a.reduce((s, x) => s + (x - m) * (x - m), 0) / a.length / (m * m); };
+    return cv(cols) > cv(rows);
+  }
+
+  async function ocrLines(canvas, psm) {
+    const worker = await load();
+    await worker.setParameters({ tessedit_pageseg_mode: String(psm || 6), tessedit_char_whitelist: '', preserve_interword_spaces: '1' });
+    try {
+      const { data } = await worker.recognize(canvas);
+      return (data.lines || []).map(l => ({ text: l.text.trim(), words: l.words.map(w => ({ text: w.text, x0: w.bbox.x0 / canvas.width, x1: w.bbox.x1 / canvas.width })) }));
+    } finally {
+      await worker.setParameters(params); // OOOI 화면 설정으로 되돌림
+    }
+  }
+
+  /**
+   * 회사 Flight Log 출력물 사진 → OCR 줄들 (사진이 옆으로 누워 있어도 됨)
+   * 반환: { lines, quarter }
+   */
+  async function scanPaper(src, opts) {
+    opts = opts || {};
+    const step = opts.onStep || (() => {});
+    const url = typeof src === 'string' ? src : URL.createObjectURL(src);
+    try {
+      const img = await loadImage(url);
+      step('글자 인식 준비 중…');
+      await load();
+      const order = looksSideways(img) ? [3, 1, 0, 2] : [0, 2, 3, 1];
+      const dates = ls => ls.filter(l => /^\W*20\d\d\W?\d\d\W?\d\d/.test(l.text)).length;
+      let quarter = order[0];
+      for (let i = 0; i < order.length; i++) {
+        step(`방향 확인 중… (${i + 1})`);
+        const ls = await ocrLines(preprocessPaper(img, { maxSide: 2000, quarter: order[i] }), 6);
+        if (dates(ls) >= 2) { quarter = order[i]; break; }
+      }
+      step('표 읽는 중… (조금 걸립니다)');
+      const lines = await ocrLines(preprocessPaper(img, { maxSide: 3600, quarter }), 6);
+      return { lines, quarter };
+    } finally {
+      if (typeof src !== 'string') URL.revokeObjectURL(url);
+    }
+  }
+
   /** JPEG의 EXIF 촬영 시각(ms). 없으면 null. iPad 사진 보관함에서 고른 사진의 날짜 추정용 */
   async function captureTime(file) {
     try {
@@ -190,5 +290,5 @@
   }
 
   async function setParams(p) { params = Object.assign({}, params, p); if (workerPromise) await (await workerPromise).setParameters(params); }
-  window.LOGBOOK_OCR = { load, scan, preprocess, setParams, captureTime };
+  window.LOGBOOK_OCR = { load, scan, preprocess, setParams, captureTime, scanPaper, preprocessPaper };
 })();

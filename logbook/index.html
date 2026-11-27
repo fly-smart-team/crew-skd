@@ -25,6 +25,7 @@
 <script src="icloud.js"></script>
 <script src="../skd-core.js"></script>
 <script src="logbook-skd.js"></script>
+<script src="logbook-companylog.js"></script>
 <style>
 /* VOICE: crew-room practical, calm — same family as the SKD→캘린더 page
    IDEA: a logbook as a departure board — each flight a row, block time hanging on the right
@@ -81,6 +82,14 @@ textarea{padding:8px 10px;min-height:70px;resize:vertical}
 .chip-go{padding:0 4px 0 12px;font-weight:600}
 .chip-x{padding:0 10px;color:var(--mute)}
 #filterPanel{margin:0 0 10px}
+.cl-table{border-collapse:collapse;font-size:13px;min-width:980px}
+.cl-table th{font-size:12px;color:var(--mute);font-weight:600;text-align:left;padding:4px;white-space:nowrap}
+.cl-table td{padding:3px 4px;border-top:1px solid var(--line);vertical-align:top}
+.cl-table input[type=text]{min-height:34px;font:500 14px "IBM Plex Mono",ui-monospace,monospace;padding:0 6px}
+.cl-table input[type=checkbox]{width:20px;height:20px;min-height:0}
+.cl-table tr.warn td{background:color-mix(in srgb,var(--warn) 12%,transparent)}
+.cl-table tr.dup td{opacity:.55}
+.cl-table .iss{font-size:12px;color:var(--warn);padding-top:0;border-top:0}
 .today-line{display:flex;align-items:center;gap:10px;color:var(--acc);font-size:13px;font-weight:700;margin:6px 0}
 .today-line::before,.today-line::after{content:"";flex:1;border-top:2px solid var(--acc)}
 .row.plan .blk .t{font-size:15px;color:var(--mute)}
@@ -229,6 +238,8 @@ table.lb tfoot td:first-child{text-align:left;font-family:"IBM Plex Sans KR",sys
       <input type="file" id="scanFile" accept="image/*" hidden>
       <input type="file" id="scanInto" accept="image/*" hidden>
       <label class="btn" for="skdFile">📅 스케줄 가져오기</label>
+      <label class="btn" for="clFile">📄 회사 로그 가져오기</label>
+      <input type="file" id="clFile" accept="image/*" hidden>
       <input type="file" id="skdFile" accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
       <button class="btn" id="addManual">+ 직접 입력</button>
       <button class="btn" id="addSim">+ 시뮬레이터</button>
@@ -262,6 +273,15 @@ table.lb tfoot td:first-child{text-align:left;font-family:"IBM Plex Sans KR",sys
     <button class="btn sm pri" id="edSave">저장</button>
   </div>
   <div class="ed-body" id="edBody"></div>
+</dialog>
+
+<dialog id="clDlg" aria-labelledby="clTitle">
+  <div class="ed-head">
+    <button class="btn sm" id="clCancel">취소</button>
+    <b id="clTitle">회사 로그 확인</b>
+    <button class="btn sm pri" id="clImport">가져오기</button>
+  </div>
+  <div class="ed-body" id="clBody"></div>
 </dialog>
 
 <dialog id="photoDlg" aria-label="스캔 사진">
