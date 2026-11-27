@@ -6,7 +6,7 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.27-8'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.27-9'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight2', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
@@ -299,9 +299,29 @@
     });
     updateSel();
   }
+  // 길게 누르기(0.5초): 선택 모드로 들어가며 그 줄을 체크
+  let lp = null, lpFired = false;
+  const lpCancel = () => { if (lp) { clearTimeout(lp.t); lp = null; } };
+  $('board').addEventListener('pointerdown', ev => {
+    const row = ev.target.closest('.row');
+    if (!row || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
+    lpCancel(); lpFired = false;
+    lp = { x: ev.clientX, y: ev.clientY, t: setTimeout(() => {
+      lp = null; lpFired = true;
+      if (navigator.vibrate) { try { navigator.vibrate(30); } catch (e) { /* 무시 */ } }
+      const id = row.dataset.id;
+      if (!SEL) { SEL = new Set([id]); renderLog(); } else if (!SEL.has(id)) toggleRow(row);
+    }, 500) };
+  });
+  $('board').addEventListener('pointermove', ev => { if (lp && Math.hypot(ev.clientX - lp.x, ev.clientY - lp.y) > 10) lpCancel(); });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => $('board').addEventListener(t, lpCancel));
+  window.addEventListener('scroll', lpCancel, { passive: true });
+  $('board').addEventListener('contextmenu', ev => { if (ev.target.closest('.row')) ev.preventDefault(); });
+
   $('board').addEventListener('click', ev => {
     const row = ev.target.closest('.row');
     if (!row) return;
+    if (lpFired) { lpFired = false; ev.preventDefault(); return; } // 길게 누른 뒤 손 뗄 때의 클릭은 무시
     if (SEL) { ev.preventDefault(); toggleRow(row); } else openEntry(row.dataset.id);
   });
   $('board').addEventListener('keydown', ev => {
