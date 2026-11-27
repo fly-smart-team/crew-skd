@@ -6,12 +6,12 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.27-6'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.27-7'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight2', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
     airline: 'KE', regPrefix: 'HL',
-    carry: { asOf: '' }, airports: [], aircraft: [], careers: [], profile: {}, print: {}, savedFilters: [], updatedAt: 0
+    carry: { asOf: '' }, airports: [], aircraft: [], careers: [], profile: {}, print: {}, savedFilters: [], checks: [], toTraining: [], updatedAt: 0
   };
   // [키, 이름, 이륙, 착륙, 그때 정할 역할(fn)] — CRZ·Observer는 이착륙 없이 역할도 바뀜
   const ROLES = [['pf', 'PF (이륙·착륙)', true, true], ['pm', 'PM', false, false], ['to', '이륙만', true, false], ['ld', '착륙만', false, true],
@@ -90,7 +90,10 @@
         <div class="lv-tabs" role="tablist">${TABS.map(([k, l]) => `<button type="button" role="tab" data-tab="${k}" aria-pressed="${LV.tab === k}">${l}</button>`).join('')}</div>
         <button type="button" class="btn sm" id="sortBtn" title="정렬 바꾸기">${sort === 'asc' ? '↑ 오름차순' : '↓ 내림차순'}</button>
         <button type="button" class="btn sm${n ? ' pri' : ''}" id="filterBtn" aria-expanded="${LV.open}">필터${n ? ' ' + n : ''}</button>
+        <button type="button" class="btn sm${SEL ? ' pri' : ''}" id="selBtn" aria-pressed="${!!SEL}">${SEL ? '선택 끝' : '선택'}</button>
       </div>
+      ${SEL ? `<div class="banner sel-bar"><span><b id="selCount">${SEL.size}</b>건 선택</span>
+        <span style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" class="btn sm" id="selAll">보이는 것 모두</button><button type="button" class="btn sm" id="selNone">선택 해제</button><button type="button" class="btn sm danger" id="selDel">선택한 기록 삭제</button></span></div>` : ''}
       ${saved.length ? `<div class="chips">${saved.map(x => `<span class="chip"><button type="button" class="chip-go" data-sf="${esc(x.id)}">${esc(x.name)}</button><button type="button" class="chip-x" data-sfdel="${esc(x.id)}" aria-label="${esc(x.name)} 지우기">×</button></span>`).join('')}</div>` : ''}
       <div class="sec" id="filterPanel"${LV.open ? '' : ' hidden'}>
         <div class="form">
@@ -113,6 +116,12 @@
       </div>`;
 
     const T = $('logTools');
+    $('selBtn').addEventListener('click', () => { SEL = SEL ? null : new Set(); renderLog(); });
+    if (SEL) {
+      $('selAll').addEventListener('click', () => { document.querySelectorAll('#board .row[data-id]').forEach(r => SEL.add(r.dataset.id)); renderBoard(); updateSel(); });
+      $('selNone').addEventListener('click', () => { SEL.clear(); renderBoard(); updateSel(); });
+      $('selDel').addEventListener('click', deleteSelected);
+    }
     T.querySelectorAll('[data-tab]').forEach(b => b.addEventListener('click', () => { LV.tab = b.dataset.tab; saveLV(); renderLog(); }));
     $('sortBtn').addEventListener('click', () => { LV.sort[LV.tab] = (LV.sort[LV.tab] || 'desc') === 'asc' ? 'desc' : 'asc'; saveLV(); renderLog(); });
     $('filterBtn').addEventListener('click', () => { LV.open = !LV.open; saveLV(); $('filterPanel').hidden = !LV.open; $('filterBtn').setAttribute('aria-expanded', LV.open); });
@@ -157,6 +166,25 @@
     }));
   }
 
+  /** 선택 모드: 고른 기록 id 모음 (null이면 선택 모드 아님) */
+  let SEL = null;
+  function updateSel() { const c = $('selCount'); if (c) c.textContent = SEL ? SEL.size : 0; }
+  async function deleteSelected() {
+    const list = S.entries.filter(e => SEL.has(e.id) && !e.deleted);
+    if (!list.length) return toast('지울 기록을 먼저 체크하세요.');
+    const done = list.filter(e => !e.planned).length;
+    if (!confirm(`선택한 ${list.length}건${done ? `(기록 ${done}건${list.length - done ? ` · 예정 ${list.length - done}건` : ''})` : ''}을 삭제할까요?\n다른 기기에서도 지워집니다.`)) return;
+    const now = Date.now(), gone = list.map(e => Object.assign({}, e, { deleted: true, updatedAt: now }));
+    await DB.putEntries(gone);
+    for (const g of gone) {
+      await DB.deletePhoto(g.id).catch(() => {});
+      const i = S.entries.findIndex(x => x.id === g.id); if (i >= 0) S.entries[i] = g;
+    }
+    SEL = null;
+    render(true); markDirty();
+    toast(`${gone.length}건을 삭제했습니다.`);
+  }
+
   function resetFilter() {
     LV.filter = Object.assign({}, L.FILTER_DEFAULT);
     S.search = ''; $('search').value = '';
@@ -182,9 +210,9 @@
     const blk = e.planned
       ? `<span class="blk"><span class="t">${e.schedOut != null && !e.schedNoTime ? L.zulu(e.schedOut) + 'Z' : '—'}</span><small>STD</small></span>`
       : `<span class="blk"><span class="t">${L.hmm(e.block)}</span>${e.night ? `<small>☾ ${L.hmm(e.night)}</small>` : ''}</span>`;
-    const isToday = e.logDate === today;
-    return `<li class="row${e.planned ? ' plan' : ''}${isToday ? ' today' : ''}" data-id="${esc(e.id)}" tabindex="0" role="button" aria-label="${esc(e.logDate)} ${esc(e.flightNumber)} ${e.planned ? '예정 비행 기록하기' : '열기'}">
-      <span class="d">${isToday ? '오늘' : esc(e.logDate.slice(5).replace('-', '/'))}</span>
+    const isToday = e.logDate === today, picked = SEL && SEL.has(e.id);
+    return `<li class="row${e.planned ? ' plan' : ''}${isToday ? ' today' : ''}${SEL ? ' selmode' : ''}${picked ? ' picked' : ''}" data-id="${esc(e.id)}" tabindex="0" role="${SEL ? 'checkbox' : 'button'}"${SEL ? ` aria-checked="${!!picked}"` : ''} aria-label="${esc(e.logDate)} ${esc(e.flightNumber)} ${SEL ? '선택' : e.planned ? '예정 비행 기록하기' : '열기'}">
+      ${SEL ? `<input type="checkbox" class="selbox" tabindex="-1" aria-hidden="true" ${picked ? 'checked' : ''}>` : ''}<span class="d">${isToday ? '오늘' : esc(e.logDate.slice(5).replace('-', '/'))}</span>
       <span><span class="ttl">${title}</span><br><span class="sub">${sub}</span></span>
       <span class="badges">${badges}</span>
       ${blk}</li>`;
@@ -262,13 +290,23 @@
     });
   }
 
+  function toggleRow(row) {
+    const id = row.dataset.id, on = !SEL.has(id);
+    if (on) SEL.add(id); else SEL.delete(id);
+    document.querySelectorAll(`#board .row[data-id="${CSS.escape(id)}"]`).forEach(r => {
+      r.classList.toggle('picked', on); r.setAttribute('aria-checked', on);
+      const b = r.querySelector('.selbox'); if (b) b.checked = on;
+    });
+    updateSel();
+  }
   $('board').addEventListener('click', ev => {
     const row = ev.target.closest('.row');
-    if (row) openEntry(row.dataset.id);
+    if (!row) return;
+    if (SEL) { ev.preventDefault(); toggleRow(row); } else openEntry(row.dataset.id);
   });
   $('board').addEventListener('keydown', ev => {
     const row = ev.target.closest('.row');
-    if (row && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); openEntry(row.dataset.id); }
+    if (row && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); if (SEL) toggleRow(row); else openEntry(row.dataset.id); }
   });
   $('search').addEventListener('input', ev => { S.search = ev.target.value; renderBoard(); });
 
@@ -323,10 +361,138 @@
       <ul class="list-plain">${crewTop.map(p => `<li><button class="btn sm" data-crew="${esc(p.name)}">${esc(p.name)}</button><span class="help mono">${p.count}회 · 마지막 ${esc(p.last.replace(/-/g, '/'))}</span></li>`).join('')}</ul>
       <p class="help">이름을 누르면 함께 탄 비행만 보여 줍니다. 로그북 탭 검색창에 이름을 넣어도 됩니다.</p>` : ''}
       <h2>이번 달 (${esc(month.replace('-', '년 '))}월)</h2>
-      <div class="cards">${card('비행시간', L.hmm(mon.total))}${card('편수', mon.flights)}${card('기장', L.hmm(mon.pic))}${card('야간', L.hmm(mon.night))}${card('이착륙', mon.takeoffs + ' / ' + mon.landings)}</div>`;
+      <div class="cards">${card('비행시간', L.hmm(mon.total))}${card('편수', mon.flights)}${card('기장', L.hmm(mon.pic))}${card('야간', L.hmm(mon.night))}${card('이착륙', mon.takeoffs + ' / ' + mon.landings)}</div>
+      ${companyBlock()}`;
+    bindCompanyForms();
   }
 
-  $('view-sum').addEventListener('click', ev => {
+  /* ---------- 회사 로그 형식 (Flight Summary · 90일 · Check · T/O & L/D 훈련) ---------- */
+
+  const coDate = d => String(d || '').replace(/-/g, '/');
+  const sortByDate = list => (list || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  /** 회사 로그 머리말·Flight Summary·90일 기록 값 */
+  function companyData(through) {
+    const st = S.settings, pf = st.profile || {}, c = st.carry || {};
+    const end = through || todayIn(st.tz);
+    const career = L.careerAt(st.careers, end);
+    const famOf = career && career.aircraftType ? L.typeFamily(career.aircraftType) : (c.typeName || L.typeFamily(st.defaultType || 'A321'));
+    const upto = S.entries.filter(e => !e.deleted && (!through || e.logDate <= through));
+    const sum = L.companySummary(upto, c, famOf, end.slice(0, 7) + '-01', end.slice(0, 7) + '-31');
+    const asOf = through ? Date.UTC(+end.slice(0, 4), +end.slice(5, 7) - 1, +end.slice(8, 10), 23, 59) : Date.now();
+    const rec = L.companyRecency(upto, asOf, 90);
+    const lastFlight = live().filter(e => !e.planned && !e.isSimulator && e.logDate <= end).map(e => e.logDate).sort().pop() || '';
+    const yearAgo = `${+end.slice(0, 4) - 1}${end.slice(4)}`;
+    return {
+      name: pf.nameEn || pf.name || '', empNo: pf.empNo || '', nationality: pf.nationality || '',
+      ac: famOf, duty: career ? ({ PIC: 'CAP', SIC: 'F/O', PICUS: 'F/O', RELIEF: 'CRZ', DUAL: 'TRN', OBS: 'OBS' }[career.fn] || career.fn) : (st.defaultDuty === 'F' ? 'F/O' : 'CAP'),
+      sum, rec, lastFlight, end,
+      checks: sortByDate(st.checks).filter(x => x.date > yearAgo && x.date <= end),
+      allChecks: sortByDate(st.checks), training: sortByDate(st.toTraining)
+    };
+  }
+
+  /** 회사 로그 모양 표들 (요약 화면과 출력에서 같이 씀). forPrint면 입력 버튼 없이 */
+  function companySheetHtml(d, forPrint) {
+    const h = L.hmm, s = d.sum, r = d.rec;
+    const del = (kind, x) => forPrint ? '' : `<td class="no-print"><button type="button" class="btn sm danger" data-codel="${kind}" data-id="${esc(x.id)}" aria-label="${esc(x.date)} 지우기">×</button></td>`;
+    const empty = (n, t) => `<tr><td colspan="${n}" class="co-empty">${t}</td></tr>`;
+    return `
+      <table class="co"><tbody><tr><th>Name</th><td>${esc(d.name) || '—'}</td><th>Empno</th><td>${esc(d.empNo) || '—'}</td><th>A/C</th><td>${esc(d.ac)}</td><th>Duty</th><td>${esc(d.duty)}</td><th>Nationality</th><td>${esc(d.nationality) || '—'}</td></tr></tbody></table>
+      <div class="co-grid">
+        <div><h3 class="co-h">Flight Summary</h3>
+          <table class="co num"><tbody>
+            <tr><th>Total</th><td>${h(s.total)}</td></tr>
+            <tr><th>${esc(s.family)} Flight</th><td>${h(s.typeTotal)}</td></tr>
+            <tr><th>${esc(s.family)} CAP</th><td>${h(s.typePic)}</td></tr>
+            <tr><th>CAP</th><td>${h(s.pic)}</td></tr>
+            <tr><th>Night</th><td>${h(s.night)}</td></tr>
+            <tr><th>Instrument</th><td>${h(s.instrument)}</td></tr>
+            <tr><th>FLT this month</th><td>${h(s.month)}</td></tr>
+          </tbody></table></div>
+        <div><h3 class="co-h">Record — Recent 90 days</h3>
+          <table class="co num"><thead><tr><th></th><th>Flight</th><th>SIM Day</th><th>SIM Night</th><th>TTL</th></tr></thead><tbody>
+            <tr><th>T/O</th><td>${r.to.flight}</td><td>${r.to.simDay}</td><td>${r.to.simNight}</td><td><b>${r.to.ttl}</b></td></tr>
+            <tr><th>L/D</th><td>${r.ld.flight}</td><td>${r.ld.simDay}</td><td>${r.ld.simNight}</td><td><b>${r.ld.ttl}</b></td></tr>
+          </tbody></table>
+          <p class="co-note">Based on last flight log data: <b>${esc(coDate(d.lastFlight)) || '—'}</b></p></div>
+      </div>
+      <div class="co-grid">
+        <div><h3 class="co-h">Recent Checks within one year</h3>
+          <table class="co"><thead><tr><th>Date</th><th>Course</th><th>SIM/RTE</th><th>Note</th>${forPrint ? '' : '<th class="no-print"></th>'}</tr></thead><tbody>
+            ${(forPrint ? d.checks : d.allChecks).map(x => `<tr${!forPrint && !d.checks.includes(x) ? ' class="old"' : ''}><td class="mono">${esc(coDate(x.date))}</td><td>${esc(x.course)}</td><td>${esc(x.kind)}</td><td>${esc(x.note)}</td>${del('check', x)}</tr>`).join('') || empty(forPrint ? 4 : 5, '기록 없음')}
+          </tbody></table></div>
+        <div><h3 class="co-h">Take off and Landing Training</h3>
+          <table class="co"><thead><tr><th>Date</th><th>Course</th><th>Note</th>${forPrint ? '' : '<th class="no-print"></th>'}</tr></thead><tbody>
+            ${d.training.map(x => `<tr><td class="mono">${esc(coDate(x.date))}</td><td>${esc(x.course)}</td><td>${esc(x.note)}</td>${del('train', x)}</tr>`).join('') || empty(forPrint ? 3 : 4, '기록 없음')}
+          </tbody></table></div>
+      </div>`;
+  }
+
+  function companyBlock() {
+    const d = companyData();
+    return `<h2>회사 로그 형식</h2>
+      <div class="sec co-wrap">${companySheetHtml(d, false)}
+        ${d.allChecks.length > d.checks.length ? '<p class="help">흐린 줄은 1년이 지난 Check — 회사 형식 출력에는 빠집니다.</p>' : ''}
+        <div class="co-grid" style="margin-top:12px">
+          <form class="co-form" id="coCheckForm"><b>Check 추가</b>
+            <div class="form">
+              <div class="field"><label for="ckDate">Date</label><input type="date" id="ckDate" required></div>
+              <div class="field"><label for="ckCourse">Course</label><input id="ckCourse" list="ckCourses" placeholder="Recurrent (2nd half)" required autocomplete="off"></div>
+              <div class="field"><label for="ckKind">SIM/RTE</label>${selectHtml('ckKind', [['SIM', 'SIM'], ['RTE', 'RTE'], ['LOE', 'LOE'], ['', '—']], 'SIM')}</div>
+              <div class="field"><label for="ckNote">Note</label><input id="ckNote" list="ckNotes" placeholder="SBE" autocomplete="off" autocapitalize="characters"></div>
+            </div>
+            <datalist id="ckCourses"><option value="Recurrent (1st half)"><option value="Recurrent (2nd half)"><option value="Recurrent"><option value="CAT-I/II/III Recurrent"><option value="Proficiency Check"><option value="Line Check"><option value="EBT"></datalist>
+            <datalist id="ckNotes"><option value="SBE"><option value="PASS"></datalist>
+            <div class="actions" style="margin:8px 0 0"><button class="btn pri" type="submit">Check 추가</button></div>
+          </form>
+          <form class="co-form" id="coTrainForm"><b>T/O & L/D 훈련 추가</b>
+            <div class="form">
+              <div class="field"><label for="trDate">Date</label><input type="date" id="trDate" required></div>
+              <div class="field"><label for="trCourse">Course</label><input id="trCourse" value="T/O & L/D" autocomplete="off"></div>
+              <div class="field"><label for="trNote">Note</label><input id="trNote" list="trNotes" value="SIMULATOR TRAINING" autocomplete="off"></div>
+            </div>
+            <datalist id="trNotes"><option value="SIMULATOR TRAINING"><option value="AIRCRAFT"></datalist>
+            <div class="actions" style="margin:8px 0 0"><button class="btn pri" type="submit">훈련 추가</button></div>
+          </form>
+        </div>
+        <div class="actions"><button class="btn" type="button" id="coPrint">회사 형식으로 출력</button></div>
+        <p class="help">Flight Summary·90일 기록은 기록에서 자동 계산합니다(이월 누계 포함). Check와 훈련은 직접 넣거나 <b>📄 회사 로그 가져오기</b>로 사진에서 읽어 옵니다. 다른 기기와 동기화됩니다.</p>
+      </div>`;
+  }
+
+  function bindCompanyForms() {
+    const f1 = $('coCheckForm'), f2 = $('coTrainForm');
+    if (!f1) return;
+    const id = () => 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    f1.addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const x = { id: id(), date: $('ckDate').value, course: $('ckCourse').value.trim(), kind: $('ckKind').value, note: $('ckNote').value.trim().toUpperCase() };
+      if (!x.date || !x.course) return toast('Date와 Course를 넣어 주세요.');
+      await saveSettings({ checks: (S.settings.checks || []).concat(x) });
+      renderSummary(); toast('Check를 추가했습니다.');
+    });
+    f2.addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const x = { id: id(), date: $('trDate').value, course: $('trCourse').value.trim() || 'T/O & L/D', note: $('trNote').value.trim() };
+      if (!x.date) return toast('Date를 넣어 주세요.');
+      await saveSettings({ toTraining: (S.settings.toTraining || []).concat(x) });
+      renderSummary(); toast('훈련 기록을 추가했습니다.');
+    });
+    $('coPrint').addEventListener('click', async () => {
+      await saveSettings({ print: Object.assign({}, S.settings.print, { format: 'company' }) });
+      show('print');
+    });
+  }
+
+  $('view-sum').addEventListener('click', async ev => {
+    const x = ev.target.closest('[data-codel]');
+    if (x) {
+      const key = x.dataset.codel === 'check' ? 'checks' : 'toTraining';
+      const item = (S.settings[key] || []).find(y => y.id === x.dataset.id);
+      if (!item || !confirm(`${coDate(item.date)} ${item.course}을(를) 지울까요?`)) return;
+      await saveSettings({ [key]: S.settings[key].filter(y => y.id !== item.id) });
+      return renderSummary();
+    }
     const b = ev.target.closest('[data-crew]');
     if (!b) return;
     S.search = b.dataset.crew;
@@ -625,6 +791,11 @@
         </table>
         <footer><span>I certify that the entries in this log are true. / 위 기록이 사실임을 확인합니다.</span><span>Signature / 서명 ____________________</span></footer>
       </section>`).join('');
+    if (opts.format === 'company') {
+      const d = companyData(opts.through || null);
+      $('prPages').insertAdjacentHTML('afterbegin', `<section class="lb-page co-page"><header><b>FLIGHT LOG</b><span>${esc(d.name)}</span><span>${esc(coDate(d.end))}</span></header>${companySheetHtml(d, true)}</section>`);
+      $('prInfo').textContent += ' · 첫 페이지: Flight Summary · 90일 기록 · Check · 훈련';
+    }
   }
 
   /* ===================== 화면 전환 ===================== */
@@ -1254,16 +1425,44 @@
 
   function openCompanyReview() {
     const { rows, summary, carry } = CLS;
-    const key = r => r.logDate + '|' + normFlight(r.flightNumber);
-    const existing = new Map(S.entries.filter(e => !e.deleted).map(e => [e.logDate + '|' + e.flightNumber, e]));
     const nWarn = rows.filter(r => !r.ok).length;
-    rows.forEach(r => { const ex = existing.get(key(r)); r.dup = ex && !ex.planned ? ex : null; r.plan = ex && ex.planned ? ex : null; });
+    const pool = S.entries.filter(e => !e.deleted && !e.isSimulator);
+    const icao = c => { const a = airports.get(c); return a ? a.icao : c; };
+    const digits = f => String(f || '').replace(/\D/g, '').replace(/^0+/, '');
+    rows.forEach(r => {
+      // 같은 날짜 + 같은 편명(숫자) 또는 같은 날짜 + 같은 구간
+      const same = pool.filter(e => e.logDate === r.logDate && (digits(e.flightNumber) && digits(e.flightNumber) === digits(r.flightNumber)
+        || e.origin === icao(r.origin) && e.destination === icao(r.destination)));
+      const ex = same.find(e => !e.planned) || null;
+      r.dup = ex; r.plan = ex ? null : same.find(e => e.planned) || null;
+      r.same = ex ? Math.abs((ex.block || 0) - (r.block || 0)) <= 1 && Math.abs((ex.flight || 0) - (r.flight || 0)) <= 1
+        && Math.abs((ex.night || 0) - (r.night || 0)) <= 1 && Math.abs((ex.instrument || 0) - (r.instrument || 0)) <= 1
+        && (ex.takeoffs > 0) === !!r.takeoff && (ex.landings > 0) === !!r.landing && (ex.registration || '') === normReg(r.registration) : false;
+      r.diff = ex && !r.same ? [
+        Math.abs((ex.block || 0) - (r.block || 0)) > 1 ? `Block ${hm(ex.block)}→${hm(r.block)}` : '',
+        Math.abs((ex.flight || 0) - (r.flight || 0)) > 1 ? `T/S ${hm(ex.flight)}→${hm(r.flight)}` : '',
+        Math.abs((ex.night || 0) - (r.night || 0)) > 1 ? `N/T ${hm(ex.night)}→${hm(r.night)}` : '',
+        Math.abs((ex.instrument || 0) - (r.instrument || 0)) > 1 ? `I/T ${hm(ex.instrument)}→${hm(r.instrument)}` : '',
+        (ex.takeoffs > 0) !== !!r.takeoff || (ex.landings > 0) !== !!r.landing ? 'T/O·L/D' : '',
+        (ex.registration || '') !== normReg(r.registration) ? `HL ${ex.registration || '—'}→${normReg(r.registration)}` : ''
+      ].filter(Boolean).join(', ') : '';
+    });
+    const nDup = rows.filter(r => r.dup).length, nDiff = rows.filter(r => r.dup && !r.same).length;
+    // 사진의 Check·훈련 중 아직 없는 것
+    const ckKey = x => x.date + '|' + String(x.course || '').toUpperCase().replace(/\W/g, '');
+    const haveCk = new Set((S.settings.checks || []).map(ckKey)), haveTr = new Set((S.settings.toTraining || []).map(ckKey));
+    (CLS.checks || []).forEach(x => { x.have = haveCk.has(ckKey(x)); });
+    (CLS.training || []).forEach(x => { x.have = haveTr.has(ckKey(x)); });
+    const actSel = (i, r) => r.dup
+      ? `<select data-cl="${i}" data-k="act" aria-label="이미 있는 기록 처리"><option value="update"${r.same ? '' : ' selected'}>고치기</option><option value="skip"${r.same ? ' selected' : ''}>건너뛰기</option><option value="add">따로 추가</option></select>`
+      : `<select data-cl="${i}" data-k="act" aria-label="넣기"><option value="add" selected>${r.plan ? '예정→기록' : '넣기'}</option><option value="skip">빼기</option></select>`;
+    const extra = (CLS.checks || []).length || (CLS.training || []).length;
     const cell = (i, f, v, w) => `<input type="text" data-cl="${i}" data-k="${f}" value="${esc(v)}" style="width:${w}" autocomplete="off" autocapitalize="characters">`;
     const hasCarry = carry && carry.total > 0;
     $('clBody').innerHTML = `
       <div class="sec"><h3>읽은 결과</h3>
         <p style="margin:0">표에서 <b>${rows.length}줄</b>을 읽었습니다.${nWarn ? ` <b style="color:var(--warn)">${nWarn}줄은 확인이 필요합니다</b>(노란 줄).` : ' 모두 검산(Duty time = R/I − R/O)을 통과했습니다.'}
-          ${rows.some(r => r.dup) ? ` 이미 있는 비행 ${rows.filter(r => r.dup).length}줄은 빼 두었습니다.` : ''}</p>
+          ${nDup ? ` 같은 날짜에 이미 있는 비행 <b>${nDup}줄</b>: ${nDiff ? `값이 다른 ${nDiff}줄은 <b>고치기</b>, ` : ''}같은 줄은 <b>건너뛰기</b>로 골라 두었습니다. 맨 앞 칸에서 고치기 · 건너뛰기 · 따로 추가를 바꿀 수 있습니다.` : ''}</p>
         ${CLS.edgeWarning ? '<p class="why">L/D 칸이 사진 가장자리에 걸려 있어 별표(*)를 놓쳤을 수 있습니다. T/O·L/D 체크를 확인해 주세요. 다음에는 표 전체가 들어오게 찍어 주세요.</p>' : ''}
         <p class="help" style="margin-bottom:6px">칸을 눌러 고칠 수 있습니다. 시각은 UTC(R/O·R/I = 회사 로그 그대로), 시간은 시:분.</p>
         <div class="field" style="max-width:260px"><label for="clAirline">편명 앞자리 (숫자만 있는 편명에 붙임)</label><input id="clAirline" value="${esc(S.settings.airline || '')}" maxlength="3" autocapitalize="characters" placeholder="OZ / KE"></div>
@@ -1274,10 +1473,10 @@
         <label style="display:inline-flex;gap:8px;align-items:center"><input type="checkbox" id="clCarry" ${S.settings.carry && S.settings.carry.total ? '' : 'checked'} style="width:20px;height:20px;min-height:0"> 이월 누계를 이 값으로 바꾸기${S.settings.carry && S.settings.carry.total ? ` (지금: ${hm(S.settings.carry.total)}, ${esc(S.settings.carry.asOf || '')}까지)` : ''}</label>
       </div>` : ''}
       <div style="overflow-x:auto"><table class="cl-table">
-        <thead><tr><th>넣기</th><th>Date</th><th>FLT</th><th>Route</th><th>HL</th><th>Duty</th><th>R/O (UTC)</th><th>R/I (UTC)</th><th>Block</th><th>T/S</th><th>N/T</th><th>I/T</th><th>T/O</th><th>L/D</th></tr></thead>
+        <thead><tr><th>처리</th><th>Date</th><th>FLT</th><th>Route</th><th>HL</th><th>Duty</th><th>R/O (UTC)</th><th>R/I (UTC)</th><th>Block</th><th>T/S</th><th>N/T</th><th>I/T</th><th>T/O</th><th>L/D</th></tr></thead>
         <tbody>${rows.map((r, i) => `
-          <tr class="${r.ok ? '' : 'warn'}${r.dup ? ' dup' : ''}">
-            <td><input type="checkbox" data-cl="${i}" data-k="use" ${r.dup ? '' : 'checked'}></td>
+          <tr class="${r.ok ? '' : 'warn'}${r.dup && r.same ? ' dup' : ''}">
+            <td>${actSel(i, r)}</td>
             <td class="mono">${esc(r.logDate.slice(5).replace('-', '/'))}</td>
             <td>${cell(i, 'flightNumber', r.flightNumber, '7ch')}</td>
             <td>${cell(i, 'route', r.origin + '-' + r.destination, '8ch')}</td>
@@ -1292,8 +1491,18 @@
             <td><input type="checkbox" data-cl="${i}" data-k="takeoff" ${r.takeoff ? 'checked' : ''}></td>
             <td><input type="checkbox" data-cl="${i}" data-k="landing" ${r.landing ? 'checked' : ''}></td>
           </tr>
-          ${r.issues.length || r.dup || r.plan ? `<tr class="${r.ok ? '' : 'warn'}"><td></td><td colspan="13" class="iss">${[r.dup ? '이미 기록된 비행' : '', r.plan ? '예정 비행을 이 기록으로 바꿉니다' : ''].concat(r.issues).filter(Boolean).map(esc).join(' · ')}</td></tr>` : ''}`).join('')}
-        </tbody></table></div>`;
+          ${r.issues.length || r.dup || r.plan ? `<tr class="${r.ok ? '' : 'warn'}"><td></td><td colspan="13" class="iss">${[r.dup ? (r.same ? '이미 같은 기록이 있음' : `이미 있는 기록과 다름: ${r.diff}`) : '', r.plan ? '예정 비행을 이 기록으로 바꿉니다' : ''].concat(r.issues).filter(Boolean).map(esc).join(' · ')}</td></tr>` : ''}`).join('')}
+        </tbody></table></div>
+      ${extra ? `<div class="sec" style="margin-top:12px"><h3>Check 현황 · T/O & L/D 훈련</h3>
+        <p class="help" style="margin:0 0 6px">사진에서 읽은 줄입니다. 이미 있는 것은 빼 두었습니다. 칸을 눌러 고칠 수 있습니다.</p>
+        <table class="cl-table" style="min-width:0"><thead><tr><th>넣기</th><th>구분</th><th>Date</th><th>Course</th><th>SIM/RTE</th><th>Note</th></tr></thead><tbody>
+        ${(CLS.checks || []).map((x, i) => `<tr class="${x.have ? 'dup' : ''}"><td><input type="checkbox" data-ck="${i}" data-k="use" ${x.have ? '' : 'checked'}></td><td>Check</td>
+          <td><input type="text" data-ck="${i}" data-k="date" value="${esc(x.date)}" style="width:11ch"></td><td><input type="text" data-ck="${i}" data-k="course" value="${esc(x.course)}" style="width:24ch"></td>
+          <td><input type="text" data-ck="${i}" data-k="kind" value="${esc(x.kind)}" style="width:5ch"></td><td><input type="text" data-ck="${i}" data-k="note" value="${esc(x.note)}" style="width:8ch"></td></tr>`).join('')}
+        ${(CLS.training || []).map((x, i) => `<tr class="${x.have ? 'dup' : ''}"><td><input type="checkbox" data-tr="${i}" data-k="use" ${x.have ? '' : 'checked'}></td><td>훈련</td>
+          <td><input type="text" data-tr="${i}" data-k="date" value="${esc(x.date)}" style="width:11ch"></td><td><input type="text" data-tr="${i}" data-k="course" value="${esc(x.course)}" style="width:24ch"></td>
+          <td></td><td><input type="text" data-tr="${i}" data-k="note" value="${esc(x.note)}" style="width:20ch"></td></tr>`).join('')}
+        </tbody></table></div>` : ''}`;
     $('clDlg').showModal();
   }
 
@@ -1301,7 +1510,8 @@
   function readCompanyRow(i) {
     const r = Object.assign({}, CLS.rows[i]);
     const v = k => { const el = document.querySelector(`[data-cl="${i}"][data-k="${k}"]`); return el ? (el.type === 'checkbox' ? el.checked : el.value.trim()) : null; };
-    if (!v('use')) return null;
+    r.act = v('act') || 'add';
+    if (r.act === 'skip') return null;
     const pre = ($('clAirline').value || '').trim().toUpperCase(), f = (v('flightNumber') || '').toUpperCase().replace(/\s+/g, '');
     r.flightNumber = /^\d/.test(f) ? pre + f : f;
     const [o, d] = v('route').toUpperCase().split(/\W+/);
@@ -1329,21 +1539,42 @@
     const bad = picked.filter(r => r.out == null || r.in == null || !r.block);
     if (bad.length) return toast(`R/O·R/I·Block을 확인해 주세요: ${bad.map(r => r.logDate.slice(5) + ' ' + r.flightNumber).join(', ')}`, 7000);
     const opts = calcOpts({ airline: S.settings.airline });
+    let nUpd = 0;
     const list = picked.map(r => {
       const e = CL.rowToEntry(r, opts);
-      const plan = S.entries.find(x => x.planned && !x.deleted && x.logDate === e.logDate && x.flightNumber === e.flightNumber);
-      if (plan) Object.assign(e, { id: plan.id, createdAt: plan.createdAt, copilotName: plan.copilotName, picName: plan.picName, crew: plan.crew, crewList: plan.crewList });
+      const base = r.act === 'update' ? r.dup : r.act === 'add' && !r.dup ? r.plan : null;
+      if (base) {
+        // 이 기기에만 있는 정보(함께 탄 사람, 접근, 메모, 사진, 편명 표기)는 그대로 두고 시각·시간만 회사 로그 값으로
+        Object.assign(e, { id: base.id, createdAt: base.createdAt, copilotName: base.copilotName, picName: base.picName, crew: base.crew, crewList: base.crewList,
+          remarks: base.remarks, hasPhoto: base.hasPhoto });
+        if (!base.planned) {
+          Object.assign(e, { approaches: base.approaches, approachType: base.approachType, holding: base.holding, examining: base.examining,
+            flightNumber: base.flightNumber || e.flightNumber, aircraftType: base.aircraftType || e.aircraftType, off: base.off, on: base.on });
+          if (base.fn && base.fn !== 'PIC' && base.fn !== 'SIC') e.fn = base.fn; // CRZ·PICUS 같은 직접 고른 역할 유지
+          nUpd++;
+        }
+      }
+      e.updatedAt = Date.now();
       return e;
     });
+    const readX = (attr, i) => { const g = k => { const el = document.querySelector(`[${attr}="${i}"][data-k="${k}"]`); return el ? (el.type === 'checkbox' ? el.checked : el.value.trim()) : ''; }; return g('use') ? { date: g('date'), course: g('course'), kind: g('kind').toUpperCase(), note: g('note') } : null; };
+    const nid = () => 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    const newCk = (CLS.checks || []).map((_, i) => readX('data-ck', i)).filter(x => x && /^\d{4}-\d\d-\d\d$/.test(x.date) && x.course).map(x => Object.assign(x, { id: nid() }));
+    const newTr = (CLS.training || []).map((_, i) => readX('data-tr', i)).filter(x => x && /^\d{4}-\d\d-\d\d$/.test(x.date)).map(x => ({ id: nid(), date: x.date, course: x.course || 'T/O & L/D', note: x.note }));
     await DB.putEntries(list);
     for (const e of list) { const i = S.entries.findIndex(x => x.id === e.id); if (i >= 0) S.entries[i] = e; else S.entries.push(e); }
-    if ($('clCarry') && $('clCarry').checked && CLS.carry) {
-      await saveSettings({ carry: Object.assign({}, S.settings.carry, CLS.carry) });
-    }
+    const carryOn = $('clCarry') && $('clCarry').checked && CLS.carry;
+    const patch = {};
+    if (carryOn) patch.carry = Object.assign({}, S.settings.carry, CLS.carry);
+    if (newCk.length) patch.checks = (S.settings.checks || []).concat(newCk);
+    if (newTr.length) patch.toTraining = (S.settings.toTraining || []).concat(newTr);
+    if (Object.keys(patch).length) await saveSettings(patch);
     $('clDlg').close();
     LV.tab = 'rec'; saveLV();
     render(true);
-    toast(`회사 로그에서 ${list.length}건을 기록으로 넣었습니다.${$('clCarry') && $('clCarry').checked ? ' 이월 누계도 맞췄습니다.' : ''}`, 6000);
+    const nAdd = list.length - nUpd;
+    toast(['회사 로그에서', nAdd ? `${nAdd}건 추가` : '', nUpd ? `${nUpd}건 고침` : '', !list.length ? '바뀐 기록 없음' : '',
+      newCk.length + newTr.length ? `Check·훈련 ${newCk.length + newTr.length}건` : '', carryOn ? '이월 누계 맞춤' : ''].filter(Boolean).join(' · '), 6000);
     markDirty();
   });
 

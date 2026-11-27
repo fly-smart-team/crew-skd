@@ -1321,6 +1321,57 @@
     return { items: list, stale, todayIndex, totals: t, today };
   }
 
+  /* ===================== 회사 로그 형식 (Flight Summary · 90일 기록) ===================== */
+
+  /** 기종 계열: A319·A320·A321(neo·회사 코드 포함) → 'A320', 그 밖은 코드 그대로 */
+  function typeFamily(code) {
+    const c = String(code || '').toUpperCase().replace(/\s+/g, '');
+    if (/^(A31[89]|A32\d|A2[01]N|A3[12]\w?N?|32\w|2Q\w|3Q\w|31P)$/.test(c) || /^A32/.test(c)) return 'A320';
+    if (/^(B73\d|B3\dM|B38M|B39M|B737)$/.test(c)) return 'B737';
+    if (/^(A33\d|A330)$/.test(c)) return 'A330';
+    if (/^(A35\w|A350)$/.test(c)) return 'A350';
+    if (/^(B77\w|B777)$/.test(c)) return 'B777';
+    if (/^(B78\w|B787)$/.test(c)) return 'B787';
+    if (/^(B74\w|B747)$/.test(c)) return 'B747';
+    return c;
+  }
+
+  /**
+   * 회사 Flight Summary 칸: 총 시간 · 기종 계열 시간 · 기종 계열 기장 시간 · 기장 시간 · 야간 · 계기 · 이번 달
+   * carry(이월 누계)에 typeName·typeTotal·typePic이 있으면 그 계열에 더함
+   */
+  function companySummary(entries, carry, family, monthFrom, monthTo) {
+    const t = totalsFull(entries, carry);
+    const fam = family || (carry && carry.typeName) || 'A320';
+    let typeTotal = carry && carry.typeName === fam ? +carry.typeTotal || 0 : 0;
+    let typePic = carry && carry.typeName === fam ? +carry.typePic || 0 : 0;
+    for (const e of live(entries)) {
+      if (e.isSimulator || fnOf(e) === 'OBS') continue;
+      if (carry && carry.asOf && e.logDate <= carry.asOf) continue;
+      if (typeFamily(e.aircraftType) !== fam) continue;
+      typeTotal += e.block || 0;
+      if (fnOf(e) === 'PIC') typePic += e.block || 0;
+    }
+    const month = totalsFull(entries, null, { from: monthFrom, through: monthTo });
+    return { family: fam, total: t.total, typeTotal, typePic, pic: t.pic, night: t.night, instrument: t.instrument, month: month.total };
+  }
+
+  /** 회사 "Record — Recent 90 days" 표: 이륙·착륙 각각 Flight / SIM Day / SIM Night / TTL */
+  function companyRecency(entries, asOf, windowDays) {
+    const start = asOf - (windowDays || 90) * DAY;
+    const r = { to: { flight: 0, simDay: 0, simNight: 0 }, ld: { flight: 0, simDay: 0, simNight: 0 } };
+    for (const e of live(entries)) {
+      const d = eventTime(e);
+      if (!(d > start && d <= asOf)) continue;
+      if (e.isSimulator) {
+        r.to.simNight += e.nightTakeoffs || 0; r.to.simDay += Math.max(0, (e.takeoffs || 0) - (e.nightTakeoffs || 0));
+        r.ld.simNight += e.nightLandings || 0; r.ld.simDay += Math.max(0, (e.landings || 0) - (e.nightLandings || 0));
+      } else { r.to.flight += e.takeoffs || 0; r.ld.flight += e.landings || 0; }
+    }
+    for (const k of ['to', 'ld']) r[k].ttl = r[k].flight + r[k].simDay + r[k].simNight;
+    return r;
+  }
+
   /* ===================== 백업·동기화·CSV ===================== */
 
   const BACKUP_FORMAT = 'pilot-logbook-backup';
@@ -1373,6 +1424,6 @@
     referenceTime, resolveTimes, sunElevation, nightTime, newEntry, recalc, eventTime, live,
     totals, recency, makeBackup, readBackup, mergeEntries, toCSV, FIELD_LABEL,
     FUNCTIONS, fnOf, instructingOf, functionTime, careerAt, AIRCRAFT_TYPES, AIRCRAFT_ALIASES, aircraftInfo, distanceNm, sunTimes, isFaaNight,
-    instApproaches, crewNamesOf, crewIndex, periodRange, FILTER_DEFAULT, filterActive, matchFilter, matchQuery, logView, derived, TOTAL_FIELDS, totalsFull, faaCurrency, FORMATS, buildLog, cellText, formatCSV
+    typeFamily, companySummary, companyRecency, instApproaches, crewNamesOf, crewIndex, periodRange, FILTER_DEFAULT, filterActive, matchFilter, matchQuery, logView, derived, TOTAL_FIELDS, totalsFull, faaCurrency, FORMATS, buildLog, cellText, formatCSV
   };
 });

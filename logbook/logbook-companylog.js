@@ -223,9 +223,29 @@
       const nums = sumLine.match(/\d{1,5}\s*[:.]\s*\d\d/g).map(x => L.parseHMM(x.replace(/\s+/g, '').replace('.', ':')));
       [summary.total, summary.typeTotal, summary.typePic, summary.pic, summary.night, summary.instrument, summary.month] = nums;
     }
+    // 최근 1년 Check 현황 (Date · Course · SIM/RTE · Note) 과 T/O & L/D 훈련 (Date · Course · Note)
+    const checks = [], training = [];
+    for (const l of L2) {
+      const t = String(l.text).replace(/[[\]{}|]/g, ' ').replace(/\s+/g, ' ').trim();
+      const m = /^\W*(20\d\d)[/.-](\d\d)[/.-](\d\d)\s+(.+)$/.exec(t);
+      if (!m || ROW_RE.test(t)) continue;
+      const date = `${m[1]}-${m[2]}-${m[3]}`;
+      let rest = m[4].replace(/^[^A-Za-z0-9]+/, '');
+      if (/[T7]\W?[O0]\s*&\s*L\W?D/i.test(rest)) {
+        const note = /SIMULATOR\s*TRAIN\w*/i.test(rest) ? 'SIMULATOR TRAINING' : (rest.split(/[T7]\W?[O0]\s*&\s*L\W?D/i)[1] || '').trim();
+        training.push({ date, course: 'T/O & L/D', note });
+        continue;
+      }
+      if (/AFLIS/i.test(rest)) continue;
+      const kind = ((/\b(SIM|RTE|FFS|LOE)\b/i.exec(rest) || [])[1] || '').toUpperCase();
+      const note = (/\b(SBE|PASS|FAIL)\b/i.exec(rest) || [])[1] || '';
+      const course = rest.replace(/\b(SIM|RTE)\b/gi, '').replace(/\b(SBE|PASS|FAIL)\b/i, '').replace(/[;:]+|\s(oo|o|=)\s/g, ' ')
+        .replace(/CAT\W?[I1l|][\/I1l|]*/i, 'CAT-I/II/III').replace(/(^|\s)(\d(?:st|nd|rd|th)\s+half\))/i, '$1($2').replace(/\s+/g, ' ').trim();
+      if (course.length >= 3) checks.push({ date, course, kind: kind || (/RTE/i.test(course) ? 'RTE' : 'SIM'), note: note.toUpperCase() });
+    }
     const based = /AFLIS\D{0,120}(20\d\d)\W(\d\d)\W(\d\d)/i.exec(all);
     if (based) summary.asOf = `${based[1]}-${based[2]}-${based[3]}`;
-    return { rows, summary, edgeWarning: !!cutOff };
+    return { rows, summary, checks, training, edgeWarning: !!cutOff };
   }
 
   /** 해석한 줄 → 로그북 기록 */
@@ -258,8 +278,13 @@
     const picRows = rows.filter(r => r.duty === 'C' || r.duty === 'I').reduce((a, r) => a + (r.block || 0), 0);
     const prev = new Date(Date.UTC(+first.slice(0, 4), +first.slice(5, 7) - 1, +first.slice(8, 10)) - DAY).toISOString().slice(0, 10);
     const total = summary.total - sum('block');
+    const famRows = rows.filter(r => L.typeFamily(r.aircraftType) === 'A320');
+    const famPic = famRows.filter(r => r.duty === 'C' || r.duty === 'I').reduce((a, r) => a + (r.block || 0), 0);
     return {
       total, multiPilot: total, pic: summary.pic != null ? summary.pic - picRows : 0,
+      typeName: 'A320',
+      typeTotal: summary.typeTotal != null ? summary.typeTotal - famRows.reduce((a, r) => a + (r.block || 0), 0) : 0,
+      typePic: summary.typePic != null ? summary.typePic - famPic : 0,
       night: summary.night != null ? summary.night - sum('night') : 0,
       instrument: summary.instrument != null ? summary.instrument - sum('instrument') : 0,
       asOf: prev

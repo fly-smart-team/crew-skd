@@ -665,3 +665,30 @@ test('회사 로그: 줄 해석과 오독 복원', () => {
   assert.equal(entry.flightNumber, 'OZ101');
   assert.deepEqual([entry.origin, entry.destination, entry.fn, entry.block, entry.instrument], ['RKSI', 'RJCC', 'PIC', 160, 125]);
 });
+
+test('회사 로그 형식: 기종 계열 누계, 90일 기록, Check·훈련 줄', () => {
+  assert.equal(L.typeFamily('A321'), 'A320');
+  assert.equal(L.typeFamily('3QR'), 'A320');
+  assert.equal(L.typeFamily('B77W'), 'B777');
+  const mk = (d, extra) => L.recalc(L.newEntry(Object.assign({ origin: 'RKSI', destination: 'RJBB', aircraftType: 'A321', out: utc(2026, 11, d, 0, 0), in: utc(2026, 11, d, 2, 0) }, extra)), { takeoff: true, landing: true });
+  const list = [mk(10, { fn: 'PIC' }), mk(12, { fn: 'SIC' }), mk(14, { fn: 'PIC', aircraftType: 'B738' }),
+    L.newEntry({ isSimulator: true, logDate: '2026-11-05', takeoffs: 4, landings: 4, nightTakeoffs: 1, nightLandings: 1, block: 240 })];
+  const carry = { total: 6000, pic: 3000, typeName: 'A320', typeTotal: 5000, typePic: 2500, asOf: '2026-10-31' };
+  const s = L.companySummary(list, carry, 'A320', '2026-11-01', '2026-11-30');
+  assert.deepEqual([s.total, s.typeTotal, s.typePic, s.pic, s.month], [6360, 5240, 2620, 3240, 360]);
+  const rec = L.companyRecency(list, utc(2026, 11, 27, 0, 0));
+  assert.deepEqual(rec.to, { flight: 3, simDay: 3, simNight: 1, ttl: 7 });
+  const r = CL.parseCompanyLog([
+    { text: '|     2025/10/26               Recurrent (2nd half)                  SIM        oo       SBE' },
+    { text: '2025/11/07                         CAT-I/IIIl Recurrent' },
+    { text: '2026/08/31                             Recurrent RTE' },
+    { text: '2026/04/25    Recurrent 1st half)   SIM  SBE' },
+    { text: '2026/10/30    CAT-I/Il/Ill Recurrent Sim' },
+    { text: '2018/06/07    7/0 & L/D    SIMULATOR TRAIN' },
+    { text: '|     2018/11/01                   T/0 & L/D                    © SIMULATOR TRAIN|' }
+  ]);
+  assert.deepEqual(r.checks.map(c => [c.date, c.course, c.kind, c.note]), [
+    ['2025-10-26', 'Recurrent (2nd half)', 'SIM', 'SBE'], ['2025-11-07', 'CAT-I/II/III Recurrent', 'SIM', ''], ['2026-08-31', 'Recurrent', 'RTE', ''],
+    ['2026-04-25', 'Recurrent (1st half)', 'SIM', 'SBE'], ['2026-10-30', 'CAT-I/II/III Recurrent', 'SIM', '']]);
+  assert.deepEqual(r.training, [{ date: '2018-06-07', course: 'T/O & L/D', note: 'SIMULATOR TRAINING' }, { date: '2018-11-01', course: 'T/O & L/D', note: 'SIMULATOR TRAINING' }]);
+});
