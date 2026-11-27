@@ -6,7 +6,7 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.27-7'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.27-8'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight2', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
@@ -559,7 +559,12 @@
         <p class="help" style="margin-top:0">기록은 항상 <b>이 기기에 먼저</b> 저장되고, 인터넷이 되면 <b>연결된 곳 모두</b>와 자동으로 합쳐집니다. 기기마다 원하는 곳만 연결하세요 (예: 개인 폰은 구글+iCloud, 회사 iPad는 iCloud만). 마지막 동기화: <span id="lastSyncText">${esc(lastSync)}</span></p>
         <h3 style="font-size:15px;margin:12px 0 6px">구글 드라이브 (개인 계정) — <span id="gStatus" class="help"></span></h3>
         <p class="help" style="margin:0 0 6px">내 드라이브의 <span class="mono">${esc(DRIVE.FILE_NAME)}</span> 파일 하나만 읽고 씁니다. 회사(워크스페이스) 계정 대신 개인 계정으로 로그인하세요.</p>
-        <div class="actions" style="margin:6px 0 14px"><button class="btn pri" id="setSync">${DRIVE.signedIn() ? '지금 동기화' : '구글 드라이브 연결'}</button></div>
+        <p class="help" style="margin:0 0 6px">계정: <b id="gAccount">${esc(S.sync.googleEmail || '—')}</b></p>
+        <div class="actions" style="margin:6px 0 14px">
+          <button class="btn pri" id="setSync">${DRIVE.signedIn() ? '지금 동기화' : '구글 드라이브 연결'}</button>
+          <button class="btn" id="gSwitch"${S.sync.fileId || DRIVE.signedIn() ? '' : ' hidden'}>다른 계정으로 바꾸기</button>
+          <button class="btn danger" id="gOff"${S.sync.fileId || DRIVE.signedIn() ? '' : ' hidden'}>연결 끊기</button>
+        </div>
         <h3 style="font-size:15px;margin:12px 0 6px">iCloud Drive 파일 (무료) — <span id="idStatus" class="help"></span></h3>
         <p class="help" style="margin:0 0 6px">회사 iPad처럼 구글을 쓰지 않는 기기용. 파일 앱의 iCloud Drive에 <span class="mono">${esc(IDRIVE_FILE)}</span> 하나를 두고 맞춥니다.
           <b>①</b>로 그 파일을 골라 합치고, <b>②</b>로 공유 → "파일에 저장" → 같은 위치를 골라 <b>대치(덮어쓰기)</b>하세요. 처음에는 ②만 하면 됩니다.</p>
@@ -697,6 +702,8 @@
     }));
     // 백업
     $('setSync').addEventListener('click', () => sync(true, true));
+    $('gSwitch').addEventListener('click', switchGoogle);
+    $('gOff').addEventListener('click', disconnectGoogle);
     refreshSyncStatus();
     if (ICLOUD.configured()) startICloud(); // 로그인 안 돼 있으면 #ck-sign-in 에 Apple 로그인 버튼이 그려짐
     if ($('ckSave')) $('ckSave').addEventListener('click', () => {
@@ -1797,15 +1804,25 @@
    * 폰이 구글·iCloud 둘 다, 회사 iPad가 iCloud만 연결돼 있어도 결국 모두 같아짐.
    * connectGoogle: 구글 로그인 창을 띄움 (버튼을 눌렀을 때만)
    */
-  async function sync(interactive, connectGoogle) {
+  async function sync(interactive, connectGoogle, selectAccount) {
     if (S.syncing) return;
     let changed = false;
     if (!navigator.onLine) { renderSync(); if (interactive) toast('오프라인입니다. 기록은 이 기기에 저장되어 있고, 인터넷이 되면 동기화합니다.'); return; }
     const errors = [];
     try {
-      if (connectGoogle && !DRIVE.signedIn()) {
-        await DRIVE.signIn();
+      if (connectGoogle && (!DRIVE.signedIn() || selectAccount)) {
+        await DRIVE.signIn({ selectAccount, hint: S.sync.googleEmail });
         try { localStorage.setItem('logbook.driveConnected', '1'); } catch (e) { /* 무시 */ }
+        const acc = await DRIVE.account().catch(() => null);
+        if (acc && acc.email) {
+          if (S.sync.googleEmail && acc.email !== S.sync.googleEmail && !selectAccount) {
+            // 다시 연결하다가 다른 계정을 골랐음 → 그 계정의 파일로 맞춤
+            toast(`다른 계정(${acc.email})으로 연결됐습니다. 이 계정의 드라이브와 맞춥니다.`, 6000);
+          }
+          if (acc.email !== S.sync.googleEmail) S.sync = Object.assign({}, S.sync, { fileId: null });
+          S.sync = Object.assign({}, S.sync, { googleEmail: acc.email });
+          await DB.set('sync', S.sync);
+        }
       }
       const on = linked();
       if (!on.length) { renderSync(); return; }
@@ -1816,7 +1833,10 @@
       let gId = null, ckTag = null;
       const ok = {};
       if (on.includes('google')) {
-        try { gId = await DRIVE.findFile(S.sync.fileId); if (gId) await merge(await DRIVE.download(gId)); ok.google = true; }
+        try {
+          if (!S.sync.googleEmail) { const acc = await DRIVE.account().catch(() => null); if (acc && acc.email) S.sync = Object.assign({}, S.sync, { googleEmail: acc.email }); }
+          gId = await DRIVE.findFile(S.sync.fileId); if (gId) await merge(await DRIVE.download(gId)); ok.google = true;
+        }
         catch (e) { errors.push('구글: ' + e.message); }
       }
       if (on.includes('icloud')) {
@@ -1853,6 +1873,31 @@
     }
   }
 
+  /** 구글 계정 바꾸기: 지금 계정 연결을 끊고 계정 고르는 창을 띄움. 이 기기 기록은 새 계정 드라이브와 합쳐짐 */
+  async function switchGoogle() {
+    const was = S.sync.googleEmail;
+    if (!confirm(`다른 구글 계정으로 바꿀까요?\n\n` +
+      `• 계정 고르는 창에서 새 계정을 고르면, 이 기기의 기록이 새 계정 드라이브의 ${DRIVE.FILE_NAME}와 합쳐져 올라갑니다.\n` +
+      `• ${was ? `지금 계정(${was})` : '지금 계정'}의 드라이브 파일은 지우지 않고 그대로 남습니다.\n` +
+      `• 회사(워크스페이스) 계정은 고르지 마세요.`)) return;
+    DRIVE.signOut();
+    S.sync = Object.assign({}, S.sync, { fileId: null, googleEmail: '', lastSync: 0, error: '' });
+    await DB.set('sync', S.sync);
+    refreshSyncStatus();
+    await sync(true, true, true);
+    if (S.sync.googleEmail) toast(`${S.sync.googleEmail} 계정으로 바꿨습니다.`, 5000);
+    if (S.view === 'set') refreshSyncStatus();
+  }
+  async function disconnectGoogle() {
+    if (!confirm(`구글 드라이브 연결을 끊을까요?${S.sync.googleEmail ? `\n(${S.sync.googleEmail})` : ''}\n\n이 기기 기록과 드라이브 파일은 그대로 남고, 자동 동기화만 멈춥니다.`)) return;
+    DRIVE.signOut();
+    try { localStorage.removeItem('logbook.driveConnected'); } catch (e) { /* 무시 */ }
+    S.sync = Object.assign({}, S.sync, { fileId: null, googleEmail: '', error: '' });
+    await DB.set('sync', S.sync);
+    renderSync(); refreshSyncStatus();
+    toast('구글 드라이브 연결을 끊었습니다.');
+  }
+
   $('syncBtn').addEventListener('click', () => {
     if (anyLinked()) return sync(true);
     if (S.sync.fileId && !ICLOUD.configured()) return sync(true, true); // 구글만 쓰던 경우: 바로 다시 연결
@@ -1881,7 +1926,11 @@
   function refreshSyncStatus() {
     const g = $('gStatus'), c = $('ckStatus'), gb = $('setSync');
     if (g) g.textContent = DRIVE.signedIn() ? '연결됨' : (S.sync.fileId ? '연결 끊김 (1시간마다 다시 연결 필요)' : '연결 안 됨');
-    if (gb) gb.textContent = DRIVE.signedIn() ? '지금 동기화' : '구글 드라이브 연결';
+    if (gb) gb.textContent = DRIVE.signedIn() ? '지금 동기화' : S.sync.fileId ? '다시 연결' : '구글 드라이브 연결';
+    const ga = $('gAccount'), on = !!(S.sync.fileId || DRIVE.signedIn());
+    if (ga) ga.textContent = S.sync.googleEmail || (on ? '확인 중…' : '—');
+    if ($('gSwitch')) $('gSwitch').hidden = !on;
+    if ($('gOff')) $('gOff').hidden = !on;
     if (c) c.textContent = !ICLOUD.configured() ? '설정 필요' : S.icloudError ? '오류: ' + S.icloudError : ICLOUD.signedIn() ? '연결됨 (로그인 유지)' : '아래 Apple 버튼으로 로그인하세요';
     const id = $('idStatus');
     if (id) {

@@ -20,9 +20,14 @@
   const signedIn = () => !!token && Date.now() < tokenExp - 60000;
   const gisReady = () => !!(window.google && google.accounts && google.accounts.oauth2);
 
-  /** 버튼 클릭 등 사용자 동작 안에서 호출해야 함 */
-  function signIn() {
-    if (signedIn()) return Promise.resolve(token);
+  /**
+   * 버튼 클릭 등 사용자 동작 안에서 호출해야 함
+   * opts.selectAccount: 계정 고르는 창을 꼭 띄움 (다른 계정으로 바꿀 때)
+   * opts.hint: 전에 쓰던 계정 이메일 (다시 연결할 때 그 계정을 먼저 제시)
+   */
+  function signIn(opts) {
+    opts = opts || {};
+    if (signedIn() && !opts.selectAccount) return Promise.resolve(token);
     if (!clientId()) return Promise.reject(new Error('Google 클라이언트 ID가 설정되지 않았습니다 (config.js).'));
     if (!gisReady()) return Promise.reject(new Error('Google 로그인 스크립트를 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.'));
     if (!client) {
@@ -45,7 +50,9 @@
     }
     return new Promise((res, rej) => {
       pending = { res, rej };
-      client.requestAccessToken({ prompt: '' });
+      const req = { prompt: opts.selectAccount ? 'select_account' : '' };
+      if (opts.hint && !opts.selectAccount) req.login_hint = opts.hint;
+      client.requestAccessToken(req);
     });
   }
 
@@ -100,5 +107,20 @@
     return (await r.json()).id;
   }
 
-  window.LOGBOOK_DRIVE = { signIn, signedIn, findFile, download, upload, gisReady, FILE_NAME };
+  /** 연결 끊기: 이 기기의 토큰을 지우고 구글에도 권한 반납 */
+  function signOut() {
+    const t = token;
+    token = ''; tokenExp = 0;
+    try { localStorage.removeItem('logbook.driveToken'); } catch (e) { /* 무시 */ }
+    if (t && gisReady()) { try { google.accounts.oauth2.revoke(t, () => {}); } catch (e) { /* 무시 */ } }
+  }
+
+  /** 연결된 계정 { email, name } (drive.file 권한으로 읽을 수 있는 about.user) */
+  async function account() {
+    const r = await api(`${API}/about?fields=user(emailAddress,displayName)`, null, '계정 확인');
+    const j = await r.json();
+    return { email: (j.user && j.user.emailAddress) || '', name: (j.user && j.user.displayName) || '' };
+  }
+
+  window.LOGBOOK_DRIVE = { signIn, signOut, signedIn, account, findFile, download, upload, gisReady, FILE_NAME };
 })();
