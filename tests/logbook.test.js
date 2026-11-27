@@ -603,3 +603,21 @@ test('목록: 오늘·예정 / 기록 / 전체, 정렬, 필터', () => {
   assert.equal(L.filterActive({ period: '', night: false }), false);
   assert.equal(L.filterActive({ fn: 'PIC' }), true);
 });
+
+test('계기 접근: VISUAL은 계기 접근에서 제외, 순항 교대·옵저버 칸', () => {
+  const mk = (extra) => L.recalc(L.newEntry(Object.assign({ origin: 'RKSI', destination: 'RJBB', aircraftType: 'A321', out: utc(2026, 11, 1, 0, 0), in: utc(2026, 11, 1, 2, 0) }, extra)), {});
+  const ils = mk({ fn: 'PIC', approaches: 2, approachType: 'ILS' }), vis = mk({ fn: 'PIC', approaches: 1, approachType: 'VISUAL' });
+  assert.equal(L.instApproaches(ils), 2);
+  assert.equal(L.instApproaches(vis), 0);
+  assert.equal(L.totalsFull([ils, vis]).approaches, 2);
+  const faa = L.buildLog([ils, vis], { format: 'faa' });
+  const col = k => faa.cols.findIndex(c => c.key === k);
+  assert.equal(faa.pages[0].rows[0].cells[col('app')], 2);
+  assert.ok(faa.pages[0].rows[0].cells[col('remarks')].includes('2× ILS'));
+  const crz = mk({ fn: 'RELIEF' }), obs = mk({ fn: 'OBS' });
+  const icao = L.buildLog([crz, obs], { format: 'icao' });
+  assert.equal(icao.rowCount, 1);                                   // 옵저버는 출력·누계에 안 들어감
+  assert.equal(icao.pages[0].pageTotal.fnCop, 120);                  // CRZ → ICAO Co-pilot
+  assert.equal(L.buildLog([crz], { format: 'faa' }).pages[0].pageTotal.sic, 120); // CRZ → FAA SIC
+  assert.equal(L.totalsFull([crz, obs]).flights, 1);
+});

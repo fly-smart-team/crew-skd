@@ -6,13 +6,16 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.27-1'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.27-3'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
     carry: { asOf: '' }, airports: [], aircraft: [], careers: [], profile: {}, print: {}, savedFilters: [], updatedAt: 0
   };
-  const ROLES = [['pf', 'PF (이륙·착륙)', true, true], ['pm', 'PM', false, false], ['to', '이륙만', true, false], ['ld', '착륙만', false, true]];
+  // [키, 이름, 이륙, 착륙, 그때 정할 역할(fn)] — CRZ·Observer는 이착륙 없이 역할도 바뀜
+  const ROLES = [['pf', 'PF (이륙·착륙)', true, true], ['pm', 'PM', false, false], ['to', '이륙만', true, false], ['ld', '착륙만', false, true],
+    ['crz', 'CRZ (순항 교대)', false, false, 'RELIEF'], ['obs', 'Observer', false, false, 'OBS']];
+  const APPROACH_TYPES = ['ILS', 'RNP', 'LOC', 'VOR', 'RNP AR', 'VISUAL'];
 
   const S = { entries: [], settings: Object.assign({}, DEFAULT_SETTINGS), view: 'log', search: '', sync: {}, syncing: false };
   let airports = L.airportDB();
@@ -164,7 +167,7 @@
       e.hasPhoto ? '<span class="badge" title="스캔 사진 있음">📷</span>' : ''
     ].join('');
     const blk = e.planned
-      ? `<span class="blk"><span class="t">${e.schedOut != null ? L.zulu(e.schedOut) + 'Z' : ''}</span><small>STD</small></span>`
+      ? `<span class="blk"><span class="t">${e.schedOut != null && !e.schedNoTime ? L.zulu(e.schedOut) + 'Z' : '—'}</span><small>STD</small></span>`
       : `<span class="blk"><span class="t">${L.hmm(e.block)}</span>${e.night ? `<small>☾ ${L.hmm(e.night)}</small>` : ''}</span>`;
     const isToday = e.logDate === today;
     return `<li class="row${e.planned ? ' plan' : ''}${isToday ? ' today' : ''}" data-id="${esc(e.id)}" tabindex="0" role="button" aria-label="${esc(e.logDate)} ${esc(e.flightNumber)} ${e.planned ? '예정 비행 기록하기' : '열기'}">
@@ -644,7 +647,8 @@
   function draftFrom(entry, extra) {
     const e = Object.assign({}, entry);
     const hh = ms => (ms == null ? '' : L.zulu(ms));
-    const role = ROLES.find(r => r[2] === e.takeoffs > 0 && r[3] === e.landings > 0);
+    const f = L.fnOf(e);
+    const role = f === 'RELIEF' ? ROLES[4] : f === 'OBS' ? ROLES[5] : ROLES.find(r => !r[4] && r[2] === e.takeoffs > 0 && r[3] === e.landings > 0);
     return Object.assign({
       e, isNew: false, notes: [], photo: null, photoUrl: null, screen: null, diag: null,
       sched: { date: e.schedOut != null ? utcDate(e.schedOut) : '', std: e.schedOut != null ? L.zulu(e.schedOut) : '', sta: e.schedIn != null ? L.zulu(e.schedIn) : '' },
@@ -671,7 +675,7 @@
   function newFlightDraft() {
     const last = live().filter(e => !e.isSimulator && !e.planned).sort((a, b) => b.createdAt - a.createdAt)[0];
     const e = L.newEntry({ aircraftType: (last && last.aircraftType) || '', registration: (last && last.registration) || '',
-      logDate: todayIn(S.settings.tz) });
+      logDate: todayIn(S.settings.tz), approaches: 1, approachType: 'ILS' });
     D = draftFrom(e, { isNew: true, role: null, hhmm: { out: '', off: '', on: '', in: '' }, lastReg: last ? { type: last.aircraftType, reg: last.registration } : null });
     if (!D.e.aircraftType) D.e.aircraftType = S.settings.defaultType;
     applyCareer(D.e.logDate);
@@ -691,6 +695,7 @@
 
   /** 예정 비행 → 기록할 초안 (역할·기장 이름은 스케줄 것을 유지) */
   function planDraft(e) {
+    if (!e.approachType) e = Object.assign({}, e, { approaches: e.approaches || 1, approachType: 'ILS' });
     return draftFrom(e, { fromPlan: true, fnTouched: true, outDate: e.schedOut != null ? utcDate(e.schedOut) : utcDate(Date.now()), role: null });
   }
 
@@ -761,7 +766,6 @@
     else body.innerHTML = flightForm();
     bindEditor();
     refreshComputed();
-    refreshSched();
     const dlg = $('ed');
     if (!dlg.open) dlg.showModal();
     body.scrollTop = 0;
@@ -784,59 +788,20 @@
       </div></div></div>`;
   }
 
-  function planSection() {
-    const e = D.e;
-    if (!D.fromPlan && !D.isNew && e.schedOut == null) return '';
-    if (D.isNew && !D.fromPlan && (D.photo || D.notes.length)) return ''; // 사진으로 스캔한 새 비행
-    const sc = D.sched;
-    const canPlan = D.fromPlan || D.isNew;
-    return `<div class="sec"><h3>스케줄${D.isNew && !D.fromPlan ? ' (선택 — 아직 비행 전이면 예정으로 저장)' : ''}</h3>
-      ${e.schedFlight && e.schedFlight !== e.flightNumber ? `<p class="help" style="margin:0 0 6px">스케줄 편명 <span class="mono">${esc(e.schedFlight)}</span></p>` : ''}
-      <div class="grid">
-        <div class="field"><label>STD 날짜 (UTC)</label><input type="date" id="schedDate" value="${esc(sc.date)}"></div>
-        <div class="field"><label>STD (UTC)</label><input id="schedStd" class="mono" inputmode="numeric" maxlength="4" placeholder="HHMM" value="${esc(sc.std)}"></div>
-        <div class="field"><label>STA (UTC)</label><input id="schedSta" class="mono" inputmode="numeric" maxlength="4" placeholder="HHMM" value="${esc(sc.sta)}"></div>
-      </div>
-      <p class="help" id="schedInfo" style="margin:6px 0"></p>
-      ${e.acCode ? `<p class="help" style="margin:0 0 6px">스케줄 기종 코드 <span class="mono">${esc(e.acCode)}</span></p>` : ''}
-      ${e.crew ? `<p class="help" style="margin:0 0 6px">스케줄 승무원: ${esc(e.crew)}</p>` : ''}
-      ${e.roleSure === false ? '<p class="why" style="margin:0 0 6px">스케줄에서 역할을 확실히 읽지 못해 추정했습니다. 아래 역할을 확인하세요.</p>' : ''}
-      <div class="actions" style="margin:8px 0 0">
-        ${D.fromPlan ? '<label class="btn pri" for="scanInto">📷 OOOI 화면 찍어서 시각 넣기</label>' : ''}
-        ${canPlan ? '<button type="button" class="btn" id="savePlan">예정으로 저장</button>' : ''}
-      </div>
-      ${D.fromPlan ? '<p class="help">당일 바뀐 편명·구간·시각·승무원은 고친 뒤 <b>예정으로 저장</b>하세요. 비행 후에는 OOOI 시각을 넣고 위의 <b>저장</b>을 누르면 기록이 됩니다.</p>' : ''}
-    </div>`;
-  }
-
-  /** 스케줄 칸(STD 날짜 + STD/STA HHMM) → UTC 시각 */
-  function resolveSched() {
-    const sc = D.sched, d = /^\d{4}-\d{2}-\d{2}$/.test(sc.date) ? Date.UTC(+sc.date.slice(0, 4), +sc.date.slice(5, 7) - 1, +sc.date.slice(8, 10)) : null;
-    const m = v => (/^\d{4}$/.test(v || '') ? L.clock.fromDigits(v) : null);
-    const so = d != null && m(sc.std) != null ? d + m(sc.std) * MIN : null;
-    let si = null;
-    if (so != null && m(sc.sta) != null) { si = Math.floor(so / DAY) * DAY + m(sc.sta) * MIN; if (si < so) si += DAY; }
-    return { schedOut: so, schedIn: si };
-  }
-
-  function refreshSched() {
-    const el = $('schedInfo');
-    if (!el) return;
-    const r = resolveSched();
-    const kst = ms => L.dateIn(ms, 'Asia/Seoul').slice(5).replace('-', '/') + ' ' + new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(ms));
-    el.textContent = r.schedOut == null ? 'STD를 넣으면 예정으로 저장할 수 있습니다.'
-      : `한국 시간 STD ${kst(r.schedOut)}${r.schedIn != null ? ` · STA ${kst(r.schedIn)} · 예정 ${L.hmm(Math.round((r.schedIn - r.schedOut) / MIN))}` : ''}`;
-  }
-
   async function savePlanned() {
-    const e = D.e, r = resolveSched();
+    const e = D.e;
+    // 예정 시각: 스케줄에서 온 STD, 없으면 입력한 OUT, 그것도 없으면 OUT 날짜
+    const od = /^\d{4}-\d{2}-\d{2}$/.test(D.outDate) ? Date.UTC(+D.outDate.slice(0, 4), +D.outDate.slice(5, 7) - 1, +D.outDate.slice(8, 10)) : null;
+    const t0 = resolveDraftTimes();
+    const r = { schedOut: e.schedOut != null ? e.schedOut : t0.out != null ? t0.out : od, schedIn: e.schedIn != null ? e.schedIn : t0.in };
     const miss = [];
     if (!e.flightNumber.trim()) miss.push('편명');
     if (!e.origin || !e.destination) miss.push('출발·도착');
-    if (r.schedOut == null) miss.push('STD');
+    if (r.schedOut == null) miss.push('날짜');
     if (miss.length) return toast('예정으로 저장하려면: ' + miss.join(', '), 4000);
     const t = Object.assign({}, e, {
       planned: true, schedOut: r.schedOut, schedIn: r.schedIn, out: null, off: null, on: null, in: null,
+      schedNoTime: e.schedOut == null && t0.out == null, // 날짜만 넣은 예정 비행
       flightNumber: e.flightNumber.toUpperCase().replace(/\s+/g, ''), logDate: L.dateIn(r.schedOut, S.settings.tz),
       // 앱에서 고친 스케줄 예정 비행은 다음 스케줄 가져오기 때 "취소"로 잘못 지우지 않도록 표시
       source: e.source === 'schedule' ? 'schedule-edited' : (e.source === 'scan' ? 'manual' : e.source || 'manual'),
@@ -854,50 +819,64 @@
 
   function flightForm() {
     const e = D.e;
-    const sel = (f, opts) => `<select data-f="${f}">${opts.map(([v, l]) => `<option value="${esc(v)}"${e[f] === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
-    const inp = (f, label, ph, cls) => `<div class="field${cls ? ' ' + cls : ''}"><label>${label}</label><input data-f="${f}" value="${esc(e[f])}" placeholder="${esc(ph || '')}" autocapitalize="characters" autocomplete="off" spellcheck="false"></div>`;
-    const apt = (f, label) => `<div class="field${flagged(f === 'origin' ? 'origin' : 'destination') ? ' flag' : ''}"><label>${label} <span class="help" data-apt-name="${f}"></span></label><input data-apt="${f}" value="${esc(e[f] ? airports.display(e[f]) : '')}" placeholder="ICN / RKSI" autocapitalize="characters" autocomplete="off" spellcheck="false"></div>`;
-    const tm = (k, label) => `<div class="${flagged(k) ? 'flag' : ''}"><label class="help" style="display:block;text-align:center;margin:0 0 4px">${label}</label>
-      <input data-t="${k}" value="${esc(D.hhmm[k])}" inputmode="numeric" maxlength="4" placeholder="HHMM" aria-label="${label} (UTC, 4자리)"><span class="when" data-when="${k}"></span></div>`;
-    return `${planSection()}${scanSection()}
-      <div class="sec"><h3>비행</h3><div class="grid">
-        ${inp('flightNumber', '편명', 'OZ731', flagged('flightID') ? 'flag' : '')}
-        ${apt('origin', '출발')}${apt('destination', '도착')}
-        ${inp('aircraftType', '기종', 'A321')}${inp('registration', '등록부호 (HL)', 'HL8399')}
-        ${inp('irregular', 'IRR', '')}
-      </div></div>
+    const box = (cls, label, inner, right) => `<div class="m-cell${right ? ' r' : ''}${cls ? ' ' + cls : ''}"><span class="m-lab">${label}</span>${inner}</div>`;
+    const txt = (f, ph, w) => `<input class="m-in" data-f="${f}" value="${esc(e[f])}" placeholder="${esc(ph)}" autocapitalize="characters" autocomplete="off" spellcheck="false"${w ? ` style="width:${w}"` : ''}>`;
+    const apt = f => `<input class="m-in m-apt${flagged(f) ? ' flag' : ''}" data-apt="${f}" value="${esc(e[f] ? airports.display(e[f]) : '')}" placeholder="${f === 'origin' ? 'ICN' : 'SGN'}" autocapitalize="characters" autocomplete="off" spellcheck="false" aria-label="${f === 'origin' ? '출발' : '도착'}">`;
+    const tm = (k, right) => box('m-t' + (flagged(k) ? ' flag' : ''), k.toUpperCase() + (k === 'out' ? ' (R/O)' : k === 'in' ? ' (R/I)' : ''),
+      `<input class="m-in m-time" data-t="${k}" value="${esc(D.hhmm[k])}" inputmode="numeric" maxlength="4" placeholder="----" aria-label="${k.toUpperCase()} (UTC 4자리)"><span class="m-z">Z</span><span class="when" data-when="${k}"></span>`, right);
+    const nOpt = [0, 1, 2, 3, 4, 5].map(n => `<option value="${n}"${(e.approaches || 0) === n ? ' selected' : ''}>${n}</option>`).join('');
+    const tOpt = APPROACH_TYPES.map(t => `<option${(e.approachType || 'ILS').toUpperCase() === t ? ' selected' : ''}>${t}</option>`).join('');
+    return `${scanSection()}
+      <div class="mcdu" role="group" aria-label="OOOI 입력">
+        <div class="m-title">AOC OOOI STATUS <span>UTC</span></div>
+        <div class="m-grid">
+          ${box(flagged('flightID') ? 'flag' : '', 'FLIGHT ID', txt('flightNumber', 'OZ731'))}
+          ${box('', 'ORIG/DEST', `<span class="m-od">${apt('origin')}<b>/</b>${apt('destination')}</span><span class="m-sub"><span data-apt-name="origin"></span><span data-apt-name="destination"></span></span>`, true)}
+          ${box('', 'A/C', txt('aircraftType', 'A321'))}
+          ${box('', 'REG', txt('registration', 'HL8399'), true)}
+          ${box('', 'DATE (OUT)', `<input class="m-in m-date" type="date" id="outDate" value="${esc(D.outDate)}">`)}
+          ${box('', 'LOG DATE', `<span class="m-val" id="logDateShow"></span>`, true)}
+          ${tm('out')}${tm('off', true)}
+          ${tm('in')}${tm('on', true)}
+          ${box('', 'BLOCK', `<span class="m-val" id="cBlock"></span>`)}
+          ${box('', 'FLIGHT', `<span class="m-val" id="cFlight"></span>`, true)}
+        </div>
+        <div class="m-foot">
+          <label class="m-key" for="scanInto">📷 화면 찍어 채우기</label>
+          <span class="m-hint">시각은 4자리 UTC. 날짜는 OUT부터 자동</span>
+        </div>
+      </div>
+      <div class="sec"><h3>T/O · L/D — 내가 한 이착륙</h3>
+        <div class="role${D.role ? '' : ' need'}" id="role">${ROLES.map(r => `<button type="button" data-role="${r[0]}" aria-pressed="${D.role === r[0]}">${r[1]}</button>`).join('')}</div>
+        ${D.role ? '' : '<p class="why">90일 이착륙 횟수에 들어가므로 꼭 골라 주세요.</p>'}
+        <p class="help" style="margin-bottom:0">CRZ: 순항 교대 조종사 — ICAO 양식은 Co-pilot, FAA 양식은 SIC 칸에 들어갑니다. Observer: 기록만 남고 비행시간·누계에는 들어가지 않습니다.</p>
+      </div>
       <div class="sec"><h3>역할 ${D.career ? `<span class="help">— 경력 단계 "${esc(D.career.title || L.FUNCTIONS[D.career.fn].label)}" 기준</span>` : ''}</h3><div class="grid">
         <div class="field"><label>이 비행에서 나의 역할</label><select id="fnSel">${Object.entries(L.FUNCTIONS).map(([k, v]) => `<option value="${k}"${L.fnOf(e) === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}</select></div>
         <div class="field" id="picNameBox"><label>기장 이름 (ICAO 8번 칸)</label><input data-f="picName" value="${esc(e.picName)}" placeholder="HONG GILDONG" autocomplete="off" list="crewNames"></div>
-        <div class="field"><label>함께 탄 조종사 (부기장 등, 여럿이면 쉼표)</label><input data-f="copilotName" value="${esc(e.copilotName)}" placeholder="KIM CHULSOO" autocomplete="off" list="crewNames"></div>
+        <div class="field"><label>함께 탄 조종사 (여럿이면 쉼표)</label><input data-f="copilotName" value="${esc(e.copilotName)}" placeholder="KIM CHULSOO" autocomplete="off" list="crewNames"></div>
         <datalist id="crewNames">${L.crewIndex(S.entries).slice(0, 200).map(x => `<option value="${esc(x.name)}">`).join('')}</datalist>
         <div class="field"><label>추가 역할</label>
           <label style="display:inline-flex;gap:6px;align-items:center;margin-right:14px"><input type="checkbox" data-chk="instructing" ${L.instructingOf(e) ? 'checked' : ''} style="width:auto;min-height:0"> 교관 비행 (IP)</label>
           <label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" data-chk="examining" ${e.examining ? 'checked' : ''} style="width:auto;min-height:0"> 심사 비행 (평가관)</label></div>
       </div></div>
-      <div class="sec"><h3>OOOI (UTC) — 4자리로 입력, 날짜는 OUT부터 자동</h3>
-        <div class="field" style="max-width:220px;margin-bottom:10px"><label>OUT 날짜 (UTC)</label><input type="date" id="outDate" value="${esc(D.outDate)}"></div>
-        <div class="oooi">${tm('out', 'OUT (R/O)')}${tm('off', 'OFF')}${tm('on', 'ON')}${tm('in', 'IN (R/I)')}</div>
-        <p class="help">로그북 날짜 <b class="mono" id="logDateShow"></b> — OUT 시각의 ${S.settings.tz === 'UTC' ? 'UTC' : '한국'} 날짜</p>
-      </div>
-      <div class="sec"><h3>T/O · L/D — 내가 한 이착륙</h3>
-        <div class="role${D.role ? '' : ' need'}" id="role">${ROLES.map(r => `<button type="button" data-role="${r[0]}" aria-pressed="${D.role === r[0]}">${r[1]}</button>`).join('')}</div>
-        ${D.role ? '' : '<p class="why">90일 이착륙 횟수에 들어가므로 꼭 골라 주세요.</p>'}
-      </div>
+      <div class="sec"><h3>계기 접근</h3><div class="grid">
+        <div class="field"><label for="apCount">접근 횟수</label><select id="apCount">${nOpt}</select></div>
+        <div class="field"><label for="apType">접근 종류</label><select id="apType">${tOpt}</select></div>
+        <div class="field"><label>체공</label><label style="display:inline-flex;gap:6px;align-items:center;min-height:42px"><input type="checkbox" data-chk="holding" ${e.holding ? 'checked' : ''} style="width:auto;min-height:0"> 체공(Holding) 함</label></div>
+      </div><p class="help" style="margin-bottom:0">VISUAL은 계기 접근이 아니라서 FAA 계기 6개월 요건과 계기 접근 누계에 세지 않습니다.</p></div>
       <div class="sec"><h3>시간</h3><div class="calc">
-        <div><label class="help">Block (Duty time)</label><div class="v" id="cBlock"></div></div>
-        <div><label class="help">Flight (T/S)</label><div class="v" id="cFlight"></div></div>
         <div class="field"><label>야간 (N/T) <button type="button" class="btn sm" id="nightAuto" hidden>자동</button></label><input id="nightIn" class="mono" inputmode="numeric"></div>
         <div class="field"><label>실계기 (I/T) <button type="button" class="btn sm" id="instAuto" hidden>자동</button></label><input id="instIn" class="mono" inputmode="numeric"></div>
         <div class="field"><label>IFR <button type="button" class="btn sm" id="ifrAuto" hidden>자동</button></label><input id="ifrIn" class="mono" inputmode="numeric"></div>
       </div><p class="help" id="calcHelp"></p></div>
-      <div class="sec"><h3>계기 접근 (FAA 6개월 요건)</h3><div class="grid">
-        <div class="field"><label>접근 횟수</label><input data-n="approaches" type="number" min="0" max="20" value="${e.approaches || 0}" inputmode="numeric"></div>
-        <div class="field"><label>접근 종류</label><input data-f="approachType" value="${esc(e.approachType)}" placeholder="ILS 33L / RNP" autocapitalize="characters"></div>
-        <div class="field"><label>체공</label><label style="display:inline-flex;gap:6px;align-items:center;min-height:42px"><input type="checkbox" data-chk="holding" ${e.holding ? 'checked' : ''} style="width:auto;min-height:0"> 체공(Holding) 함</label></div>
-      </div></div>
-      <div class="sec"><h3>비고</h3><textarea data-f="remarks" rows="2">${esc(e.remarks)}</textarea></div>
-      ${D.isNew ? '' : '<div class="actions"><button class="btn danger" id="edDelete">이 기록 삭제</button></div>'}`;
+      <div class="sec"><h3>IRR · 비고</h3><div class="grid">
+        <div class="field"><label>IRR</label><input data-f="irregular" value="${esc(e.irregular)}" autocapitalize="characters" autocomplete="off"></div>
+      </div><textarea data-f="remarks" rows="2" style="margin-top:8px" placeholder="비고">${esc(e.remarks)}</textarea></div>
+      <div class="actions">
+        ${D.fromPlan || D.isNew ? '<button type="button" class="btn" id="savePlan">예정으로 저장 (비행 전)</button>' : ''}
+        ${D.isNew ? '' : `<button class="btn danger" id="edDelete">${e.planned ? '이 예정 비행 삭제' : '이 기록 삭제'}</button>`}
+      </div>`;
   }
 
   function simForm() {
@@ -940,23 +919,26 @@
         if (i < 3) body.querySelector(`[data-t="${order[i + 1]}"]`).focus();
       }
     }));
-    for (const id of ['schedDate', 'schedStd', 'schedSta']) {
-      const el = $(id);
-      if (!el) continue;
-      el.addEventListener('input', () => {
-        if (id !== 'schedDate') el.value = el.value.replace(/\D/g, '').slice(0, 4);
-        D.sched[{ schedDate: 'date', schedStd: 'std', schedSta: 'sta' }[id]] = el.value;
-        refreshSched();
-      });
-    }
+    if ($('apCount')) $('apCount').addEventListener('change', ev => { e.approaches = +ev.target.value; });
+    if ($('apType')) $('apType').addEventListener('change', ev => { e.approachType = ev.target.value; });
     if ($('savePlan')) $('savePlan').addEventListener('click', () => savePlanned().catch(err => toast('저장 실패: ' + err.message, 6000)));
     const fnSel = $('fnSel');
-    if (fnSel) fnSel.addEventListener('change', () => { e.fn = fnSel.value; D.fnTouched = true; recalcDraft(); refreshComputed(); });
+    if (fnSel) fnSel.addEventListener('change', () => {
+      e.fn = fnSel.value; D.fnTouched = true;
+      const auto = e.fn === 'RELIEF' ? 'crz' : e.fn === 'OBS' ? 'obs' : (['crz', 'obs'].includes(D.role) ? null : D.role);
+      if (auto !== D.role) { D.role = auto; body.querySelectorAll('[data-role]').forEach(x => x.setAttribute('aria-pressed', x.dataset.role === auto)); }
+      recalcDraft(); refreshComputed();
+    });
     body.querySelectorAll('[data-chk]').forEach(el => el.addEventListener('change', () => { e[el.dataset.chk] = el.checked; recalcDraft(); refreshComputed(); }));
     const od = $('outDate');
     if (od) od.addEventListener('change', () => { D.outDate = od.value; recalcDraft(); refreshComputed(); });
     body.querySelectorAll('[data-role]').forEach(b => b.addEventListener('click', () => {
       D.role = b.dataset.role;
+      const r = ROLES.find(x => x[0] === D.role);
+      if (r[4]) e.fn = r[4]; // CRZ → 순항 교대, Observer → 옵저버
+      else if (['RELIEF', 'OBS'].includes(L.fnOf(e))) { const c = L.careerAt(S.settings.careers, e.logDate || todayIn(S.settings.tz)); e.fn = c ? c.fn : 'PIC'; }
+      D.fnTouched = true;
+      if ($('fnSel')) $('fnSel').value = L.fnOf(e);
       body.querySelectorAll('[data-role]').forEach(x => x.setAttribute('aria-pressed', x === b));
       $('role').classList.remove('need');
       const why = body.querySelector('.why'); if (why) why.remove();
@@ -1010,11 +992,11 @@
       $('instAuto').hidden = !e.instrumentManual;
       for (const f of ['origin', 'destination']) {
         const n = document.querySelector(`[data-apt-name="${f}"]`), a = airports.get(e[f]);
-        if (n) n.textContent = a ? a.icao : (e[f] ? '목록에 없음' : '');
+        if (n) n.textContent = a ? (f === 'origin' ? a.icao + '/' : a.icao) : (e[f] ? '목록에 없음' : '');
       }
       const miss = missingFields(), probs = timeProblems();
       const o = airports.get(e.origin), d = airports.get(e.destination);
-      document.querySelectorAll('.oooi > div').forEach(x => x.classList.toggle('bad', probs.length > 0));
+      document.querySelectorAll('.mcdu .m-t').forEach(x => x.classList.toggle('bad', probs.length > 0));
       $('calcHelp').textContent = miss.length ? '저장하려면: ' + miss.join(', ')
         : probs.length ? '⚠ 시각을 확인하세요: ' + probs.join(' · ')
         : (!o || !d) ? '공항 좌표가 없어 야간 시간을 계산하지 못했습니다. 설정 › 공항에서 추가하거나 직접 입력하세요.'
@@ -1031,7 +1013,6 @@
     const probs = timeProblems();
     if (probs.length && !confirm('시각이 이상합니다:\n\n• ' + probs.join('\n• ') + '\n\n그래도 저장할까요?')) return;
     if (!e.isSimulator) e.flightNumber = e.flightNumber.toUpperCase().replace(/\s+/g, '');
-    if (!e.isSimulator && $('schedStd')) { const rs = resolveSched(); if (rs.schedOut != null) { e.schedOut = rs.schedOut; e.schedIn = rs.schedIn; } }
     let target = e;
     if (D.isNew && !e.isSimulator) {
       const dup = live().find(x => x.id !== e.id && !x.isSimulator && x.logDate === e.logDate && x.flightNumber === e.flightNumber);

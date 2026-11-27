@@ -917,6 +917,9 @@
     return (s.set == null || ms >= s.set + 60 * MIN) && (s.rise == null || ms <= s.rise - 60 * MIN);
   }
 
+  /** 계기 접근 횟수 (VISUAL은 계기 접근이 아니므로 0) */
+  const instApproaches = e => (String(e.approachType || '').toUpperCase() === 'VISUAL' ? 0 : (e.approaches || 0));
+
   /** 출력·누계에 쓰는 한 비행의 파생 값 */
   function derived(e, ctx) {
     ctx = ctx || {};
@@ -976,7 +979,7 @@
     t.total += x.total; t.multiPilot += x.multiPilot;
     for (const k of ['pic', 'picus', 'sic', 'relief', 'dual', 'instructor', 'examiner']) t[k] += x.ft[k];
     t.night += e.night || 0; t.ifr += x.ifr; t.instrument += e.instrument || 0; t.simInst += e.simInst || 0; t.xc += x.xc;
-    t.landingsDay += x.dayLdg; t.landingsNight += x.nightLdg; t.approaches += e.approaches || 0;
+    t.landingsDay += x.dayLdg; t.landingsNight += x.nightLdg; t.approaches += instApproaches(e);
     t.takeoffs += e.takeoffs || 0; t.landings += e.landings || 0;
   }
 
@@ -999,8 +1002,8 @@
       if (d > start) { night.takeoffs += nto; night.landings += nld; }
       for (let i = 0; i < nto; i++) to.push(d);
       for (let i = 0; i < nld; i++) ld.push(d);
-      if (d >= monthStart) { inst.approaches += e.approaches || 0; if (e.holding) inst.holding++; }
-      for (let i = 0; i < (e.approaches || 0); i++) apps.push(d);
+      if (d >= monthStart) { inst.approaches += instApproaches(e); if (e.holding) inst.holding++; }
+      for (let i = 0; i < instApproaches(e); i++) apps.push(d);
       if (e.holding) holds.push(d);
     }
     to.sort((a, b) => b - a); ld.sort((a, b) => b - a); apps.sort((a, b) => b - a); holds.sort((a, b) => b - a);
@@ -1066,7 +1069,7 @@
         { key: 'from', group: 'Route', label: 'From', kind: 'text', row: (e) => e.isSimulator ? '' : e.origin },
         { key: 'to', group: 'Route', label: 'To', kind: 'text', row: (e) => e.isSimulator ? '' : e.destination },
         { key: 'remarks', label: 'Remarks, procedures, maneuvers', kind: 'text', row: (e) => remarksFor(e, 'faa') },
-        { key: 'app', label: 'Inst. App.', kind: 'count', sum: 'approaches', row: (e) => e.approaches || 0 },
+        { key: 'app', label: 'Inst. App.', kind: 'count', sum: 'approaches', row: (e) => instApproaches(e) },
         { key: 'ldgDay', group: 'Landings', label: 'Day', kind: 'count', sum: 'landingsDay', row: (e, x) => x.dayLdg },
         { key: 'ldgNight', group: 'Landings', label: 'Night', kind: 'count', sum: 'landingsNight', row: (e, x) => x.nightLdg },
         { key: 'cat', label: 'Category & Class', kind: 'text', row: (e, x) => e.isSimulator ? '' : x.ac.cls },
@@ -1116,7 +1119,7 @@
     if (f === 'RELIEF') parts.push('Cruise relief');
     if (instructingOf(e)) parts.push(fmt === 'faa' ? 'Instructing' : 'Instructor');
     if (e.examining) parts.push('Examiner');
-    if (e.approaches && e.approachType) parts.push(e.approachType);
+    if (e.approaches && e.approachType) parts.push((e.approaches > 1 ? e.approaches + '× ' : '') + e.approachType);
     if (e.holding) parts.push('Hold');
     if (f !== 'PIC' && fmt === 'faa' && e.picName) parts.push('PIC ' + e.picName);
     if (e.remarks) parts.push(e.remarks);
@@ -1369,6 +1372,6 @@
     referenceTime, resolveTimes, sunElevation, nightTime, newEntry, recalc, eventTime, live,
     totals, recency, makeBackup, readBackup, mergeEntries, toCSV, FIELD_LABEL,
     FUNCTIONS, fnOf, instructingOf, functionTime, careerAt, AIRCRAFT_TYPES, AIRCRAFT_ALIASES, aircraftInfo, distanceNm, sunTimes, isFaaNight,
-    crewNamesOf, crewIndex, periodRange, FILTER_DEFAULT, filterActive, matchFilter, matchQuery, logView, derived, TOTAL_FIELDS, totalsFull, faaCurrency, FORMATS, buildLog, cellText, formatCSV
+    instApproaches, crewNamesOf, crewIndex, periodRange, FILTER_DEFAULT, filterActive, matchFilter, matchQuery, logView, derived, TOTAL_FIELDS, totalsFull, faaCurrency, FORMATS, buildLog, cellText, formatCSV
   };
 });
