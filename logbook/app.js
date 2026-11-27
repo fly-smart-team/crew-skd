@@ -6,7 +6,7 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const pad2 = n => (n < 10 ? '0' : '') + n;
   const DAY = L.DAY, MIN = L.MIN;
-  window.LOGBOOK_VERSION = '2026.11.27-5'; // sw.js의 VERSION과 같이 올리기
+  window.LOGBOOK_VERSION = '2026.11.27-6'; // sw.js의 VERSION과 같이 올리기
 
   const DEFAULT_SETTINGS = {
     tz: 'Asia/Seoul', schedTz: 'Asia/Seoul', night: 'civil', instrumentRule: 'flight2', ifrRule: 'block', defaultType: 'A321', defaultDuty: 'C',
@@ -770,7 +770,8 @@
     const e = D.e, p = [];
     if (e.isSimulator) return p;
     const mins = (a, b) => (a != null && b != null ? Math.round((b - a) / MIN) : null);
-    const blk = mins(e.out, e.in), tout = mins(e.out, e.off), tin = mins(e.on, e.in), flt = mins(e.off, e.on);
+    const blk = mins(e.out, e.in), tout = mins(e.out, e.off), tin = mins(e.on, e.in);
+    const flt = e.off != null && e.on != null ? mins(e.off, e.on) : (e.flight || null); // OFF·ON이 없으면 직접 넣은 T/S
     if (blk != null && blk > 20 * 60) p.push(`Block이 ${L.hmm(blk)}입니다 (20시간 초과)`);
     if (tout != null && tout > 150) p.push(`OUT→OFF 지상 이동이 ${L.hmm(tout)}입니다`);
     if (tin != null && tin > 150) p.push(`ON→IN 지상 이동이 ${L.hmm(tin)}입니다`);
@@ -862,7 +863,7 @@
           ${tm('out')}${tm('off', true)}
           ${tm('in')}${tm('on', true)}
           ${box('', 'BLOCK', `<span class="m-val" id="cBlock"></span>`)}
-          ${box('', 'FLIGHT', `<span class="m-val" id="cFlight"></span>`, true)}
+          ${box('', 'FLIGHT', `<span class="m-val" id="cFlight"></span><input class="m-in m-time" id="flightIn" inputmode="numeric" placeholder="-:--" aria-label="비행시간 (T/S, 시:분)" hidden><span class="m-sub" id="flightNote"></span>`, true)}
         </div>
         <div class="m-foot">
           <label class="m-key" for="scanInto">📷 화면 찍어 채우기</label>
@@ -980,6 +981,12 @@
     durField('nightIn', 'night', 'nightManual', 'nightAuto');
     durField('instIn', 'instrument', 'instrumentManual', 'instAuto');
     durField('ifrIn', 'ifr', 'ifrManual', 'ifrAuto');
+    $('flightIn').addEventListener('change', ev => {
+      const v = L.parseHMM(ev.target.value);
+      if (v == null && ev.target.value.trim()) { ev.target.value = e.flight ? L.hmm(e.flight) : ''; return; }
+      e.flight = v || 0;
+      recalcDraft(); refreshComputed();
+    });
     const simTime = $('simTime');
     if (simTime) simTime.addEventListener('change', () => { const v = L.parseHMM(simTime.value); if (v != null) e.block = v; simTime.value = L.hmm(e.block); });
     const del = $('edDelete');
@@ -999,7 +1006,13 @@
       }
       $('logDateShow').textContent = e.logDate ? e.logDate.replace(/-/g, '/') : '—';
       $('cBlock').textContent = e.out != null && e.in != null ? L.hmm(e.block) : '—';
-      $('cFlight').textContent = e.off != null && e.on != null ? L.hmm(e.flight) : '—';
+      // OFF·ON이 있으면 그 차이, 없으면 비행시간(T/S)을 직접 넣거나 회사 로그 값을 그대로 씀
+      const hasOffOn = e.off != null && e.on != null, flIn = $('flightIn');
+      $('cFlight').hidden = !hasOffOn;
+      flIn.hidden = hasOffOn;
+      $('cFlight').textContent = hasOffOn ? L.hmm(e.flight) : '';
+      if (!hasOffOn && document.activeElement !== flIn) flIn.value = e.flight ? L.hmm(e.flight) : '';
+      $('flightNote').textContent = hasOffOn ? '' : 'T/S (OFF·ON 없이 직접)';
       const ni = $('nightIn'), ii = $('instIn'), fi = $('ifrIn');
       if (document.activeElement !== ni) ni.value = L.hmm(e.night);
       if (document.activeElement !== ii) ii.value = L.hmm(e.instrument);
